@@ -27,8 +27,14 @@ export function CameraView() {
 
   if (cameraError) {
     return (
-      <div className="flex items-center justify-center h-screen bg-black text-white p-4">
-        <p className="text-center">カメラの起動に失敗しました。権限を確認してください。</p>
+      <div className="flex items-center justify-center h-screen bg-black text-white p-6">
+        <div className="max-w-sm space-y-3 text-center">
+          <p className="text-lg font-semibold">カメラを起動できません</p>
+          <p className="text-sm text-white/80">{cameraError.message}</p>
+          <p className="text-xs text-white/60">
+            スマホでPCのローカル開発サーバーを見る場合は、HTTPSのトンネルURL（ngrok / cloudflared など）を使ってください。
+          </p>
+        </div>
       </div>
     );
   }
