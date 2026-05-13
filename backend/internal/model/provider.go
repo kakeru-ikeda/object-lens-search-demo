@@ -1,9 +1,24 @@
 package model
 
 type RecognizeObjectRequest struct {
-	ImageDataURL string
-	MIMEType     string
-	Language     string
+	ImageDataURL   string
+	Crops          *ImageCrops
+	MIMEType       string
+	CropMIMETypes  map[string]string
+	Language       string
+	VisualEvidence *VisualEvidence
+}
+
+type ExtractEvidenceRequest struct {
+	ImageDataURL  string
+	Crops         *ImageCrops
+	MIMEType      string
+	CropMIMETypes map[string]string
+}
+
+type ExtractEvidenceResponse struct {
+	Evidence VisualEvidence
+	Provider string
 }
 
 type RecognizeObjectResponse struct {

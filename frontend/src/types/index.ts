@@ -1,9 +1,24 @@
+export interface EvidenceItem {
+  text: string;
+  score?: number;
+}
+
+export interface VisualEvidence {
+  ocr?: EvidenceItem[];
+  logos?: EvidenceItem[];
+  webEntities?: EvidenceItem[];
+  bestGuessLabels?: string[];
+  labels?: EvidenceItem[];
+  matchingImageUrls?: string[];
+}
+
 export interface RecognizedObject {
   objectName: string;
   description: string;
   searchQuery: string;
   confidence: 'low' | 'medium' | 'high';
   needsMoreContext: boolean;
+  visualEvidence?: VisualEvidence;
 }
 
 export interface NormalizedSearchResult {
@@ -28,9 +43,30 @@ export interface SearchSummary {
   model: string;
 }
 
+export interface ImageCrops {
+  tightCrop: string;
+  contextCrop: string;
+  textEnhancedCrop?: string;
+}
+
+export interface QueryQuality {
+  blur: 'low' | 'medium' | 'high' | 'unknown';
+  cropConfidence: 'low' | 'medium' | 'high' | 'unknown' | 'received';
+  textVisibility: 'low' | 'medium' | 'high' | 'unknown';
+  status: 'not_measured' | 'multi_crop_received_not_measured' | 'multi_crop_received_cloud_vision_disabled' | 'cloud_vision_disabled' | 'cloud_vision_error' | 'cloud_vision_no_evidence' | 'measured' | string;
+  evidenceTypes?: string[];
+}
+
+export interface Ambiguity {
+  isAmbiguous: boolean;
+  reason: string;
+}
+
 export interface RecognizeSearchResponse {
   requestId: string;
+  queryQuality: QueryQuality;
   recognizedObject: RecognizedObject;
+  ambiguity: Ambiguity;
   search: {
     provider: string;
     query: string;
@@ -40,15 +76,24 @@ export interface RecognizeSearchResponse {
   meta: {
     llmProvider: string;
     searchProvider: string;
+    cloudVisionProvider: string;
     elapsedMs: number;
+    stageLatency: {
+      cloudVisionMs: number;
+      recognizeMs: number;
+      searchMs: number;
+      summarizeMs: number;
+    };
   };
 }
 
 export interface RecognizeSearchRequest {
-  imageBase64: string;
+  imageBase64?: string;
+  crops?: ImageCrops;
   language?: string;
   options?: {
     maxSearchResults?: number;
+    enableMultiCrop?: boolean;
   };
 }
 

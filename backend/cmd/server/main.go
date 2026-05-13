@@ -24,6 +24,9 @@ import (
 	mocksearch "object-lens-search-demo/backend/internal/search/mock"
 	"object-lens-search-demo/backend/internal/search/tavily"
 	"object-lens-search-demo/backend/internal/usecase"
+	"object-lens-search-demo/backend/internal/vision"
+	cloudvision "object-lens-search-demo/backend/internal/vision/cloudvision"
+	mockvision "object-lens-search-demo/backend/internal/vision/mock"
 )
 
 func main() {
@@ -43,8 +46,15 @@ func main() {
 		logger.Error("build searcher", "error", err)
 		os.Exit(1)
 	}
-
-	uc := &usecase.RecognizeSearchUsecase{LLM: vision, Searcher: webSearcher, LLMProvider: llmProvider, SearchProvider: searchProvider}
+	visionEvidence, cloudVisionProvider, err := buildCloudVision(context.Background(), cfg, logger)
+	if err != nil {
+		logger.Error("build cloud vision", "error", err)
+		os.Exit(1)
+	}
+	if visionEvidence != nil {
+		defer visionEvidence.Close()
+	}
+	uc := &usecase.RecognizeSearchUsecase{LLM: vision, Searcher: webSearcher, Vision: visionEvidence, LLMProvider: llmProvider, SearchProvider: searchProvider, CloudVisionProvider: cloudVisionProvider, Logger: logger}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", handler.Health)
 	mux.Handle("/api/recognize-search", &handler.RecognizeSearchHandler{Usecase: uc, MaxRequestBytes: cfg.MaxRequestBytes, RequestTimeout: cfg.RequestTimeout})
@@ -57,7 +67,7 @@ func main() {
 
 	server := &http.Server{Addr: ":" + cfg.Port, Handler: app, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
-		logger.Info("server starting", "port", cfg.Port, "llmProvider", llmProvider, "searchProvider", searchProvider)
+		logger.Info("server starting", "port", cfg.Port, "llmProvider", llmProvider, "searchProvider", searchProvider, "cloudVisionProvider", cloudVisionProvider)
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("server failed", "error", err)
 			os.Exit(1)
@@ -108,4 +118,23 @@ func buildSearcher(cfg config.Config, logger *slog.Logger) (search.WebSearcher, 
 		return nil, "", errors.New("TAVILY_API_KEY is required")
 	}
 	return &tavily.Client{APIKey: cfg.TavilyAPIKey, Endpoint: cfg.TavilyEndpoint}, "tavily", nil
+}
+
+func buildCloudVision(ctx context.Context, cfg config.Config, logger *slog.Logger) (vision.EvidenceExtractor, string, error) {
+	if !cfg.CloudVisionEnabled {
+		logger.Info("cloud vision disabled")
+		return nil, "disabled", nil
+	}
+	if cfg.CloudVisionProvider == "mock" {
+		return &mockvision.Client{}, "cloud-vision-mock", nil
+	}
+	client, err := cloudvision.New(ctx)
+	if err != nil {
+		if cfg.AllowMockFallback {
+			logger.Warn("cloud vision unavailable; disabling evidence extraction outside production", "error", err)
+			return nil, "disabled", nil
+		}
+		return nil, "", err
+	}
+	return client, "cloud-vision", nil
 }

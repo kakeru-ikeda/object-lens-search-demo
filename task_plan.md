@@ -1,44 +1,47 @@
-# Task Plan: Object Lens Search MVP Implementation
+# Task Plan: No-Vector Google Visual Search Implementation
 
 ## Goal
-Implement the DESIGN.md backend MVP: Go API with Bedrock + Tavily provider boundaries.
+Implement the Google visual-search direction without customer-managed vector search, vector databases, embedding indexes, or Vector Search collections.
 
 ## Scope
-- Backend /healthz and /api/recognize-search with validation, CORS, rate limit, request ID, JSON logging.
-- Provider interfaces: VisionLLM and WebSearcher.
-- Mock fallback, Bedrock adapter, Tavily adapter, normalized models.
-- Backend .env.example and Dockerfile.
+- Preserve the current Bedrock + Tavily MVP flow.
+- Keep multi-crop input and query-quality scaffolding.
+- Remove Vertex AI embedding and Vector Search provider implementation.
+- Keep the future path focused on Cloud Vision Web Detection, OCR, Logo Detection, Label Detection, optional Product Recognizer, and LLM/Tavily evidence synthesis.
 
 ## Phases
-1. [complete] Restore planning context and read DESIGN.md backend requirements.
-2. [complete] Scaffold backend Go module structure and config.
-3. [complete] Implement backend models, middleware, handlers, usecase.
-4. [complete] Implement mock, Bedrock, and Tavily providers.
-5. [complete] Add backend env example, Dockerfile, and tests.
-6. [complete] Verify with gofmt, diagnostics, go test, and go build.
-6. [pending] Verify with gofmt, diagnostics, go test, and go build.
+1. [complete] Create implementation branch `feat/google-visual-search`.
+2. [complete] Add multi-crop request/response scaffolding.
+3. [complete] Analyze and remove Vector Search / embedding implementation after user clarified no-vector requirement.
+4. [complete] Update frontend and backend response schema to remove visualMatches/visualSearch vector-search fields.
+5. [complete] Rewrite architecture document as no-vector Google visual-search design.
+6. [in_progress] Verify with grep, backend tests/build/vet, frontend typecheck/build, and Oracle review.
 
 ## Decisions
-- Backend: Go net/http to avoid unnecessary router dependencies.
-- MVP providers: Bedrock + Tavily fixed by env; mock mode allowed only when APP_ENV != production and credentials/config are missing, or provider env explicitly mock.
-- Do not touch frontend/.
+- No `backend/internal/embedding/` package.
+- No `backend/internal/visualsearch/` package.
+- No `ENABLE_VISUAL_SEARCH`, `VERTEX_EMBEDDING_*`, or `VECTOR_SEARCH_*` env vars.
+- No Vector Search collection setup requirement.
+- Future Google work should add Cloud Vision evidence extraction instead of vector DB search.
+- Query quality remains `unknown` / `not_measured` until actual image-quality/OCR logic exists.
 
 ## Errors Encountered
 | Error | Attempt | Resolution |
 |-------|---------|------------|
-| gopls not installed for lsp_diagnostics | 1 | Used go vet ./... as Go diagnostics fallback; go test/build passed. |
+| Existing plan drifted into Vector Search despite no-vector requirement | 1 | Rewrote plan and removed Vector Search/embedding implementation. |
+| `gopls` not installed for Go LSP diagnostics | 1 | Use `go test`, `go build`, and `go vet` as fallback diagnostics. |
 
 ## Last Updated
-2026-05-12T12:30:00.000Z
+2026-05-13T02:20:00+09:00
 
-7. [complete] Fix review blockers.
 
-## Review Fixes
-- Fixed late getUserMedia stream cleanup in frontend camera hook.
-- Fixed object-cover crop coordinate mapping.
-- Fixed rate limiter IP normalization and expired bucket pruning.
-- Replaced backend internal error details with public messages.
-- Improved frontend API error parsing and close UX.
+## Added Phase: Real Cloud Vision Evidence Integration
+7. [in_progress] Add no-vector Cloud Vision evidence provider for Web Detection, OCR, Logo Detection, and Label Detection.
+8. [pending] Feed Cloud Vision evidence into Bedrock recognition/search-query synthesis.
+9. [pending] Expose evidence and measured status in API/UI.
+10. [pending] Verify backend/frontend builds, tests, vet/typecheck, and implementation review.
 
-## Last Updated
-2026-05-12T12:08:21.564876+00:00
+## New Decisions
+- Cloud Vision is an evidence layer, not vector search.
+- Cloud Vision failures should not break the full search path unless configuration requires provider startup and startup itself fails.
+- Runtime status must be explicit: disabled, measured, or error.

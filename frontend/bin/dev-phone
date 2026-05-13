@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+FRONTEND_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENV_FILE="$FRONTEND_DIR/.env"
+PHONE_CAM_URL="${PHONE_CAM_URL:-}"
+PHONE_CAM_MODE="${PHONE_CAM_MODE:-auto}"
+VIDEO_DEVICE="${VIDEO_DEVICE:-/dev/video10}"
+VIDEO_SIZE="${VIDEO_SIZE:-1280x720}"
+VIDEO_FPS="${VIDEO_FPS:-30}"
+
+if [[ -f "$ENV_FILE" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+fi
+
+if [[ "$PHONE_CAM_MODE" == "auto" ]]; then
+  if [[ -n "$PHONE_CAM_URL" ]]; then
+    PHONE_CAM_MODE="http"
+  elif command -v scrcpy >/dev/null 2>&1 && command -v adb >/dev/null 2>&1 && adb get-state >/dev/null 2>&1; then
+    PHONE_CAM_MODE="scrcpy"
+  else
+    PHONE_CAM_MODE="http"
+  fi
+fi
+
+if [[ "$PHONE_CAM_MODE" == "http" && -z "$PHONE_CAM_URL" ]]; then
+  cat <<'USAGE'
+PHONE_CAM_URL is required.
+
+Use a phone webcam app that exposes an MJPEG/HTTP stream, for example:
+  - DroidCam / IP Webcam on Android
+  - any app that shows an http://PHONE_IP:PORT/video or /mjpegfeed URL
+
+Example:
+  PHONE_CAM_URL="http://192.168.0.23:8080/video" ./bin/dev-phone
+
+USB Android alternative:
+  PHONE_CAM_MODE=scrcpy ./bin/dev-phone
+
+Optional:
+  PHONE_CAM_MODE=auto|http|scrcpy
+  VIDEO_DEVICE=/dev/video10
+  VIDEO_SIZE=1280x720
+  VIDEO_FPS=30
+
+Requires on PC:
+  sudo modprobe v4l2loopback devices=1 video_nr=10 card_label="Phone Camera" exclusive_caps=1
+  ffmpeg for PHONE_CAM_MODE=http
+  scrcpy + adb for PHONE_CAM_MODE=scrcpy
+USAGE
+  exit 1
+fi
+
+if [[ ! -e "$VIDEO_DEVICE" ]]; then
+  cat <<EOF
+Video device ${VIDEO_DEVICE} does not exist.
+
+Create it with:
+  sudo modprobe v4l2loopback devices=1 video_nr=${VIDEO_DEVICE#/dev/video} card_label="Phone Camera" exclusive_caps=1
+EOF
+  exit 1
+fi
+
+if [[ "$PHONE_CAM_MODE" == "http" ]] && ! command -v ffmpeg >/dev/null 2>&1; then
+  echo "ffmpeg is required to pipe the phone camera stream into ${VIDEO_DEVICE}."
+  exit 1
+fi
+
+if [[ "$PHONE_CAM_MODE" == "scrcpy" ]]; then
+  if ! command -v scrcpy >/dev/null 2>&1 || ! command -v adb >/dev/null 2>&1; then
+    echo "scrcpy and adb are required for PHONE_CAM_MODE=scrcpy."
+    exit 1
+  fi
+  if ! adb get-state >/dev/null 2>&1; then
+    echo "No Android device is available via adb. Connect USB and enable USB debugging."
+    exit 1
+  fi
+fi
+
+export VITE_API_BASE_URL="${VITE_API_BASE_URL:-http://localhost:8080}"
+
+cleanup() {
+  if [[ -n "${camera_pid:-}" ]]; then
+    kill "$camera_pid" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT INT TERM
+
+if [[ "$PHONE_CAM_MODE" == "scrcpy" ]]; then
+  echo "Streaming Android camera via scrcpy -> ${VIDEO_DEVICE}"
+  scrcpy --v4l2-sink="$VIDEO_DEVICE" --no-video-playback --no-audio &
+  camera_pid=$!
+else
+  echo "Streaming phone camera ${PHONE_CAM_URL} -> ${VIDEO_DEVICE}"
+  ffmpeg \
+    -hide_banner \
+    -loglevel warning \
+    -fflags nobuffer \
+    -i "$PHONE_CAM_URL" \
+    -vf "scale=${VIDEO_SIZE},fps=${VIDEO_FPS}" \
+    -f v4l2 \
+    "$VIDEO_DEVICE" &
+  camera_pid=$!
+fi
+
+echo "Starting frontend on http://localhost:5173 (API=${VITE_API_BASE_URL})"
+echo "In browser camera picker, choose: Phone Camera / ${VIDEO_DEVICE}"
+cd "$FRONTEND_DIR"
+exec npm run dev -- --host 127.0.0.1

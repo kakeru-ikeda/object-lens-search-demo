@@ -35,7 +35,7 @@ func (c *Client) RecognizeObject(ctx context.Context, req model.RecognizeObjectR
 	if err != nil {
 		return nil, err
 	}
-	prompt := recognitionPrompt(req.Language)
+	prompt := recognitionPrompt(req.Language, req.VisualEvidence)
 	body := anthropicRequest{
 		AnthropicVersion: "bedrock-2023-05-31",
 		MaxTokens:        700,
@@ -59,7 +59,7 @@ func (c *Client) SummarizeSearchResults(ctx context.Context, req model.Summarize
 	if c.Runtime == nil || strings.TrimSpace(c.ModelID) == "" {
 		return nil, errors.New("bedrock runtime and model ID are required")
 	}
-	compact, err := json.Marshal(req.Results)
+	compact, err := json.Marshal(compactSearchResults(req.Results))
 	if err != nil {
 		return nil, fmt.Errorf("marshal search results: %w", err)
 	}
@@ -154,10 +154,51 @@ func parseDataURL(value string) (string, string, error) {
 	return strings.TrimPrefix(meta, "data:"), payload, nil
 }
 
-func recognitionPrompt(language string) string {
-	return "Identify the main object in this image. Return only valid JSON with objectName, description, searchQuery, confidence (low|medium|high), needsMoreContext. Use language " + language + ". Do not include markdown."
+type compactSearchResult struct {
+	Title       string  `json:"title"`
+	URL         string  `json:"url"`
+	Snippet     string  `json:"snippet"`
+	Source      string  `json:"source"`
+	Rank        int     `json:"rank"`
+	Score       float64 `json:"score"`
+	ContentType string  `json:"contentType,omitempty"`
+}
+
+func compactSearchResults(results []model.NormalizedSearchResult) []compactSearchResult {
+	compact := make([]compactSearchResult, 0, len(results))
+	for _, result := range results {
+		compact = append(compact, compactSearchResult{
+			Title:       result.Title,
+			URL:         result.URL,
+			Snippet:     result.Snippet,
+			Source:      result.Source,
+			Rank:        result.Rank,
+			Score:       result.Score,
+			ContentType: result.ContentType,
+		})
+	}
+	return compact
+}
+
+func recognitionPrompt(language string, evidence *model.VisualEvidence) string {
+	base := "Identify the main object in this image. Return only valid JSON with objectName, description, searchQuery, confidence (low|medium|high), needsMoreContext. Use language " + language + ". Do not include markdown."
+	if evidence == nil || evidence.Empty() {
+		return base
+	}
+	compact, err := json.Marshal(evidence)
+	if err != nil {
+		return base
+	}
+	return base + " Use these Google Cloud Vision evidence signals as corroborating evidence, not as absolute truth. Prefer OCR/logo/web entities when they agree. Evidence JSON: " + string(compact)
 }
 
 func summarizePrompt(language string, object model.RecognizedObject, results string) string {
-	return fmt.Sprintf("Summarize these search results for object %q. Return only valid JSON {\"text\":\"...\"}. Use language %s. Results JSON: %s", object.ObjectName, language, results)
+	evidence := ""
+	if object.VisualEvidence != nil && !object.VisualEvidence.Empty() {
+		compact, err := json.Marshal(object.VisualEvidence)
+		if err == nil {
+			evidence = " Cloud Vision evidence JSON: " + string(compact)
+		}
+	}
+	return fmt.Sprintf("Summarize these search results for object %q. Return only valid JSON {\"text\":\"...\"}. Use language %s.%s Results JSON: %s", object.ObjectName, language, evidence, results)
 }

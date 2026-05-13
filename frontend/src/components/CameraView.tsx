@@ -1,7 +1,7 @@
 import { useState, useCallback } from 'react';
 import { useCamera } from '../hooks/useCamera';
 import { useRecognizeSearch } from '../hooks/useRecognizeSearch';
-import { cropImage } from '../lib/cropImage';
+import { cropImageMultiVariant } from '../lib/cropImage';
 import { CaptureOverlay } from './CaptureOverlay';
 import { ResultPanel } from './ResultPanel';
 import { Camera, Loader2 } from 'lucide-react';
@@ -18,8 +18,8 @@ export function CameraView() {
     const videoRect = video.getBoundingClientRect();
     
     try {
-      const imageBase64 = cropImage(video, captureRect, videoRect);
-      fetchSearch(imageBase64);
+      const crops = cropImageMultiVariant(video, captureRect, videoRect);
+      fetchSearch(crops);
     } catch (err) {
       console.error('Failed to crop image', err);
     }

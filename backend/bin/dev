@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BACKEND_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENV_FILE="$BACKEND_DIR/.env"
+
+if [[ -f "$ENV_FILE" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+fi
+
+export APP_ENV="${APP_ENV:-development}"
+export PORT="${PORT:-8080}"
+export ALLOWED_ORIGINS="${ALLOWED_ORIGINS:-http://localhost:5173}"
+
+echo "Starting backend on http://localhost:${PORT} (APP_ENV=${APP_ENV})"
+cd "$BACKEND_DIR"
+exec go run ./cmd/server

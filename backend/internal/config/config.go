@@ -17,6 +17,10 @@ type Config struct {
 	RequestTimeout      time.Duration
 	LLMProvider         string
 	SearchProvider      string
+	GCPProjectID        string
+	GCPRegion           string
+	CloudVisionEnabled  bool
+	CloudVisionProvider string
 	AWSRegion           string
 	BedrockModelID      string
 	TavilyAPIKey        string
@@ -28,18 +32,22 @@ type Config struct {
 
 func Load() (Config, error) {
 	cfg := Config{
-		AppEnv:             getEnv("APP_ENV", "development"),
-		Port:               getEnv("PORT", "8080"),
-		AllowedOrigins:     splitCSV(getEnv("ALLOWED_ORIGINS", "http://localhost:5173")),
-		RateLimitPerMinute: getEnvInt("RATE_LIMIT_PER_MINUTE", 30),
-		MaxRequestBytes:    int64(getEnvInt("MAX_REQUEST_BYTES", 5*1024*1024)),
-		RequestTimeout:     time.Duration(getEnvInt("REQUEST_TIMEOUT_SECONDS", 30)) * time.Second,
-		LLMProvider:        strings.ToLower(getEnv("LLM_PROVIDER", "bedrock")),
-		SearchProvider:     strings.ToLower(getEnv("SEARCH_PROVIDER", "tavily")),
-		AWSRegion:          getEnv("AWS_REGION", ""),
-		BedrockModelID:     getEnv("BEDROCK_MODEL_ID", ""),
-		TavilyAPIKey:       getEnv("TAVILY_API_KEY", ""),
-		TavilyEndpoint:     getEnv("TAVILY_ENDPOINT", "https://api.tavily.com/search"),
+		AppEnv:              getEnv("APP_ENV", "development"),
+		Port:                getEnv("PORT", "8080"),
+		AllowedOrigins:      splitCSV(getEnv("ALLOWED_ORIGINS", "http://localhost:5173")),
+		RateLimitPerMinute:  getEnvInt("RATE_LIMIT_PER_MINUTE", 30),
+		MaxRequestBytes:     int64(getEnvInt("MAX_REQUEST_BYTES", 5*1024*1024)),
+		RequestTimeout:      time.Duration(getEnvInt("REQUEST_TIMEOUT_SECONDS", 30)) * time.Second,
+		LLMProvider:         strings.ToLower(getEnv("LLM_PROVIDER", "bedrock")),
+		SearchProvider:      strings.ToLower(getEnv("SEARCH_PROVIDER", "tavily")),
+		GCPProjectID:        getEnv("GCP_PROJECT_ID", ""),
+		GCPRegion:           getEnv("GCP_REGION", "us-central1"),
+		CloudVisionEnabled:  getEnvBool("CLOUD_VISION_ENABLED", false),
+		CloudVisionProvider: strings.ToLower(getEnv("CLOUD_VISION_PROVIDER", "cloudvision")),
+		AWSRegion:           getEnv("AWS_REGION", ""),
+		BedrockModelID:      getEnv("BEDROCK_MODEL_ID", ""),
+		TavilyAPIKey:        getEnv("TAVILY_API_KEY", ""),
+		TavilyEndpoint:      getEnv("TAVILY_ENDPOINT", "https://api.tavily.com/search"),
 	}
 	cfg.AllowMockFallback = cfg.AppEnv != "production"
 	cfg.EffectiveLLMMode = cfg.LLMProvider
@@ -60,6 +68,9 @@ func Load() (Config, error) {
 	if cfg.SearchProvider != "tavily" && cfg.SearchProvider != "mock" {
 		return cfg, errors.New("SEARCH_PROVIDER must be tavily or mock")
 	}
+	if cfg.CloudVisionProvider != "cloudvision" && cfg.CloudVisionProvider != "mock" {
+		return cfg, errors.New("CLOUD_VISION_PROVIDER must be cloudvision or mock")
+	}
 	if cfg.AppEnv == "production" {
 		if cfg.LLMProvider == "mock" || cfg.SearchProvider == "mock" {
 			return cfg, errors.New("mock providers are not allowed in production")
@@ -70,6 +81,9 @@ func Load() (Config, error) {
 		if cfg.TavilyAPIKey == "" {
 			return cfg, errors.New("TAVILY_API_KEY is required in production")
 		}
+		if cfg.CloudVisionEnabled && cfg.CloudVisionProvider == "mock" {
+			return cfg, errors.New("mock Cloud Vision provider is not allowed in production")
+		}
 	}
 	return cfg, nil
 }
@@ -79,6 +93,14 @@ func getEnv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func getEnvBool(key string, fallback bool) bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	if v == "" {
+		return fallback
+	}
+	return v == "1" || v == "true" || v == "yes" || v == "on"
 }
 
 func getEnvInt(key string, fallback int) int {

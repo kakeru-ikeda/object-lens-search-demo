@@ -49,7 +49,7 @@ func (h *RecognizeSearchHandler) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	normalized, mimeType, errCode, errMsg := validateRequest(req, h.MaxRequestBytes)
+	normalized, mimeType, cropMIMETypes, errCode, errMsg := validateRequest(req, h.MaxRequestBytes)
 	if errCode != "" {
 		status := http.StatusBadRequest
 		if errCode == model.ErrImageTooLarge {
@@ -59,7 +59,7 @@ func (h *RecognizeSearchHandler) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	resp, err := h.Usecase.Execute(ctx, usecase.ExecuteRequest{RequestID: requestID, Request: normalized, MIMEType: mimeType})
+	resp, err := h.Usecase.Execute(ctx, usecase.ExecuteRequest{RequestID: requestID, Request: normalized, MIMEType: mimeType, CropMIMETypes: cropMIMETypes})
 	if err != nil {
 		status, code := mapUsecaseError(err)
 		writeError(w, status, code, publicUsecaseErrorMessage(code), requestID)
@@ -68,39 +68,90 @@ func (h *RecognizeSearchHandler) ServeHTTP(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func validateRequest(req model.RecognizeSearchRequest, maxBytes int64) (model.RecognizeSearchRequest, string, string, string) {
+func validateRequest(req model.RecognizeSearchRequest, maxBytes int64) (model.RecognizeSearchRequest, string, map[string]string, string, string) {
 	req.Language = strings.TrimSpace(req.Language)
 	if req.Language == "" {
 		req.Language = "ja"
 	}
 	if req.Language != "ja" && req.Language != "en" {
-		return req, "", model.ErrInvalidRequest, "language must be ja or en"
+		return req, "", nil, model.ErrInvalidRequest, "language must be ja or en"
 	}
 	if req.Options.MaxSearchResults == 0 {
 		req.Options.MaxSearchResults = 5
 	}
 	if req.Options.MaxSearchResults < 1 || req.Options.MaxSearchResults > 5 {
-		return req, "", model.ErrInvalidRequest, "options.maxSearchResults must be between 1 and 5"
+		return req, "", nil, model.ErrInvalidRequest, "options.maxSearchResults must be between 1 and 5"
 	}
-	if strings.TrimSpace(req.ImageBase64) == "" {
-		return req, "", model.ErrInvalidRequest, "imageBase64 is required"
+	hasImage := strings.TrimSpace(req.ImageBase64) != ""
+	hasCrops := req.Crops != nil
+	if hasImage == hasCrops {
+		return req, "", nil, model.ErrInvalidRequest, "provide exactly one of imageBase64 or crops"
 	}
-	mimeType, payload, ok := strings.Cut(req.ImageBase64, ";base64,")
+	if hasCrops {
+		cropMIMETypes, code, msg := validateCrops(req.Crops, maxBytes)
+		if code != "" {
+			return req, "", nil, code, msg
+		}
+		if req.ImageBase64 == "" {
+			req.ImageBase64 = req.Crops.TightCrop
+		}
+		return req, cropMIMETypes["tightCrop"], cropMIMETypes, "", ""
+	}
+	mimeType, code, msg := validateImageDataURL(req.ImageBase64, "imageBase64", maxBytes)
+	if code != "" {
+		return req, "", nil, code, msg
+	}
+	return req, mimeType, nil, "", ""
+}
+
+func validateCrops(crops *model.ImageCrops, maxBytes int64) (map[string]string, string, string) {
+	if crops == nil {
+		return nil, model.ErrInvalidRequest, "crops is required"
+	}
+	crops.TightCrop = strings.TrimSpace(crops.TightCrop)
+	crops.ContextCrop = strings.TrimSpace(crops.ContextCrop)
+	crops.TextEnhancedCrop = strings.TrimSpace(crops.TextEnhancedCrop)
+	if crops.TightCrop == "" || crops.ContextCrop == "" {
+		return nil, model.ErrInvalidRequest, "crops.tightCrop and crops.contextCrop are required"
+	}
+	cropMIMETypes := make(map[string]string, 3)
+	for name, value := range map[string]string{
+		"tightCrop":   crops.TightCrop,
+		"contextCrop": crops.ContextCrop,
+	} {
+		mimeType, code, msg := validateImageDataURL(value, "crops."+name, maxBytes)
+		if code != "" {
+			return nil, code, msg
+		}
+		cropMIMETypes[name] = mimeType
+	}
+	if crops.TextEnhancedCrop != "" {
+		mimeType, code, msg := validateImageDataURL(crops.TextEnhancedCrop, "crops.textEnhancedCrop", maxBytes)
+		if code != "" {
+			return nil, code, msg
+		}
+		cropMIMETypes["textEnhancedCrop"] = mimeType
+	}
+	return cropMIMETypes, "", ""
+}
+
+func validateImageDataURL(imageDataURL string, fieldName string, maxBytes int64) (string, string, string) {
+	mimeType, payload, ok := strings.Cut(imageDataURL, ";base64,")
 	if !ok || !strings.HasPrefix(mimeType, "data:") {
-		return req, "", model.ErrUnsupportedImageType, "imageBase64 must be a jpeg, png, or webp data URL"
+		return "", model.ErrUnsupportedImageType, fieldName + " must be a jpeg, png, or webp data URL"
 	}
 	mimeType = strings.TrimPrefix(mimeType, "data:")
 	if mimeType != "image/jpeg" && mimeType != "image/png" && mimeType != "image/webp" {
-		return req, "", model.ErrUnsupportedImageType, "unsupported image MIME type"
+		return "", model.ErrUnsupportedImageType, "unsupported image MIME type"
 	}
 	decodedLen := base64.StdEncoding.DecodedLen(len(payload))
 	if int64(decodedLen) > maxBytes {
-		return req, "", model.ErrImageTooLarge, fmt.Sprintf("decoded image exceeds %d bytes", maxBytes)
+		return "", model.ErrImageTooLarge, fmt.Sprintf("decoded image exceeds %d bytes", maxBytes)
 	}
 	if _, err := base64.StdEncoding.DecodeString(payload); err != nil {
-		return req, "", model.ErrInvalidRequest, "imageBase64 contains invalid base64"
+		return "", model.ErrInvalidRequest, fieldName + " contains invalid base64"
 	}
-	return req, mimeType, "", ""
+	return mimeType, "", ""
 }
 
 func mapUsecaseError(err error) (int, string) {
@@ -115,7 +166,6 @@ func mapUsecaseError(err error) (int, string) {
 	}
 	return http.StatusInternalServerError, model.ErrInternal
 }
-
 
 func publicUsecaseErrorMessage(code string) string {
 	switch code {
