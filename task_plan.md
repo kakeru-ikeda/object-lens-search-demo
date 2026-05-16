@@ -96,3 +96,28 @@ Resolved review blockers:
 All local verification gates passed. Remaining production-only work:
 - Deploy-time Cloud Run progressive flush gate.
 - Provider-specific optimization for native Bedrock multi-image content and worker-limited Cloud Vision concurrency beyond current sequential multi-image extraction.
+
+
+## 2026-05-17 Static passphrase gate
+
+Goal: add a lightweight passphrase gate for the GitHub Pages frontend before camera/search features load.
+
+Phases:
+1. [complete] Locate frontend entry points and config patterns.
+2. [complete] Choose client-side PBKDF2-SHA256 hash verification with `sessionStorage` unlock state.
+3. [complete] Add gate UI, auth hook, env example, hash generator, and README setup notes.
+4. [complete] Verify frontend diagnostics, typecheck, and build.
+
+Decision: this is a convenience gate only; GitHub Pages static bundles cannot provide real protection for secrets or confidential content.
+
+Errors Encountered:
+| Error | Attempt | Resolution |
+|---|---|---|
+| `ctx_execute` wrote from a temp cwd and failed to find `frontend/.env.example` | 1 | Switched to direct repo patch with absolute paths. |
+| `crypto.subtle.deriveBits` rejected `Uint8Array<ArrayBufferLike>` salt type | 1 | Changed salt conversion to return `ArrayBuffer`. |
+
+Verification:
+- LSP diagnostics passed for `frontend/src/App.tsx`, `frontend/src/components/PassphraseGate.tsx`, `frontend/src/hooks/usePassphraseAuth.ts`, `frontend/src/config/auth.ts`, and `frontend/src/vite-env.d.ts`.
+- `cd frontend && npm run auth:hash -- "sample-long-passphrase-for-check"` passed.
+- `cd frontend && npm run typecheck` passed.
+- `cd frontend && npm run build` passed.

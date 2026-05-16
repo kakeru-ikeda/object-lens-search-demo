@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "typecheck": "tsgo --noEmit"
+    "typecheck": "tsgo --noEmit",
+    "auth:hash": "node ./scripts/hash-passphrase.mjs"
   },
   "dependencies": {
     "react": "^18.3.1",
