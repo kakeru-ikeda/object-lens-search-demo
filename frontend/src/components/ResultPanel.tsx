@@ -1,8 +1,10 @@
 import { EvidenceItem, RecognizeSearchResponse, VisualEvidence } from '../types';
 import { SearchResultList } from './SearchResultList';
+import { X } from 'lucide-react';
 
 interface ResultPanelProps {
   data: RecognizeSearchResponse;
+  onClose: () => void;
 }
 
 const statusLabel: Record<string, string> = {
@@ -31,11 +33,11 @@ function hasEvidence(evidence?: VisualEvidence) {
   );
 }
 
-export function ResultPanel({ data }: ResultPanelProps) {
+export function ResultPanel({ data, onClose }: ResultPanelProps) {
   const evidence = data.recognizedObject.visualEvidence;
 
   return (
-    <div className="flex flex-col w-full max-w-md mx-auto bg-neutral-50 rounded-t-2xl p-6 overflow-y-auto max-h-[70vh] shadow-xl">
+    <div className="flex flex-col w-full max-w-md mx-auto bg-neutral-50 rounded-t-2xl p-5 sm:p-6 overflow-y-auto max-h-[min(78dvh,calc(100dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-1rem))] shadow-xl">
       <div className="flex justify-between items-start mb-4">
         <div>
           <h2 className="text-xl font-bold text-neutral-900">{data.recognizedObject.objectName}</h2>
@@ -43,6 +45,14 @@ export function ResultPanel({ data }: ResultPanelProps) {
             {data.recognizedObject.confidence} confidence
           </span>
         </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="ml-4 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-neutral-900 text-white shadow-sm transition-colors hover:bg-neutral-700"
+          aria-label="検索結果を閉じる"
+        >
+          <X className="h-4 w-4" />
+        </button>
       </div>
 
       <p className="text-neutral-700 mb-6">{data.recognizedObject.description}</p>

@@ -56,7 +56,7 @@ export function CameraView() {
 
   if (cameraError) {
     return (
-      <div className="flex items-center justify-center h-screen bg-black text-white p-6">
+      <div className="flex items-center justify-center app-viewport bg-black text-white p-6">
         <div className="max-w-sm space-y-3 text-center">
           <p className="text-lg font-semibold">カメラを起動できません</p>
           <p className="text-sm text-white/80">{cameraError.message}</p>
@@ -69,7 +69,7 @@ export function CameraView() {
   }
 
   return (
-    <div className="relative flex flex-col h-screen bg-black overflow-hidden">
+    <div className="relative flex flex-col app-viewport bg-black overflow-hidden">
       <div className="relative flex-1">
         <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover" />
         {stream && <CaptureOverlay onCaptureRectChange={setCaptureRect} />}
@@ -80,7 +80,7 @@ export function CameraView() {
         {events.length > 0 && <StreamTimeline events={events} />}
       </div>
 
-      <div className="absolute bottom-0 inset-x-0 flex flex-col items-center gap-3 pb-8 pt-4 bg-gradient-to-t from-black/80 to-transparent">
+      <div className="absolute bottom-0 inset-x-0 flex flex-col items-center gap-2 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-3 bg-gradient-to-t from-black/85 via-black/55 to-transparent">
         {searchError && <div className="px-4 py-2 bg-red-500 text-white rounded-lg text-sm max-w-xs text-center">{searchError.message}</div>}
 
         <div className="text-xs text-white/80 bg-black/40 rounded-full px-3 py-1">
@@ -91,16 +91,16 @@ export function CameraView() {
           <button
             onClick={handleCapture}
             disabled={!stream || loading || images.length >= 5}
-            className="relative flex items-center justify-center w-20 h-20 bg-white rounded-full disabled:opacity-50 hover:bg-neutral-100 transition-colors"
+            className="relative flex items-center justify-center w-16 h-16 sm:w-20 sm:h-20 bg-white rounded-full disabled:opacity-50 hover:bg-neutral-100 transition-colors shadow-lg shadow-black/30"
             aria-label="画像を追加"
           >
-            <Camera className="w-8 h-8 text-neutral-900" />
+            <Camera className="w-7 h-7 sm:w-8 sm:h-8 text-neutral-900" />
           </button>
 
           <button
             onClick={handleSearch}
             disabled={images.length === 0 || loading}
-            className="flex items-center gap-2 px-5 py-3 bg-blue-500 text-white rounded-full disabled:opacity-50 hover:bg-blue-600 transition-colors"
+            className="flex items-center gap-2 px-4 py-2.5 sm:px-5 sm:py-3 bg-blue-500 text-white rounded-full disabled:opacity-50 hover:bg-blue-600 transition-colors shadow-lg shadow-black/20"
             aria-label="複数画像で検索する"
           >
             {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Search className="w-5 h-5" />}
@@ -110,11 +110,16 @@ export function CameraView() {
       </div>
 
       {data && (
-        <div className="absolute inset-0 z-50 flex items-end bg-black/60 backdrop-blur-sm transition-opacity">
-          <button className="absolute top-4 right-4 p-2 text-white bg-black/40 rounded-full" onClick={reset} aria-label="閉じる">
+        <div className="absolute inset-0 z-50 flex items-end bg-black/60 backdrop-blur-sm transition-opacity" role="dialog" aria-modal="true" aria-label="検索結果">
+          <button
+            type="button"
+            className="absolute [top:max(1rem,env(safe-area-inset-top))] [right:max(1rem,env(safe-area-inset-right))] z-[60] p-2 text-white bg-black/50 rounded-full shadow-lg backdrop-blur transition-colors hover:bg-black/70"
+            onClick={reset}
+            aria-label="検索結果を閉じる"
+          >
             <X className="w-5 h-5" />
           </button>
-          <ResultPanel data={data} />
+          <ResultPanel data={data} onClose={reset} />
         </div>
       )}
     </div>

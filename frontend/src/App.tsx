@@ -3,7 +3,7 @@ import { PassphraseGate } from './components/PassphraseGate';
 
 export function App() {
   return (
-    <main className="w-full h-screen bg-black">
+    <main className="w-full app-viewport bg-black">
       <PassphraseGate>
         <CameraView />
       </PassphraseGate>
