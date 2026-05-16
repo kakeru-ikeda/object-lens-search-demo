@@ -3,6 +3,7 @@ package usecase
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -178,5 +179,74 @@ func TestExecuteCancelsVisionWhenRecognitionFails(t *testing.T) {
 	case <-cancelled:
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("expected vision extraction to be cancelled and drained")
+	}
+}
+
+func TestExecuteMultiImageContributesToMockResult(t *testing.T) {
+	uc := &RecognizeSearchUsecase{LLM: &mock.Client{Model: "mock"}, Searcher: &mocksearch.Client{}, LLMProvider: "mock", SearchProvider: "mock"}
+	req := model.RecognizeSearchRequest{
+		Images: []model.ImageInput{
+			{ID: "front", Role: "primary", ImageBase64: "data:image/jpeg;base64,aW1hZ2Ux"},
+			{ID: "label", Role: "supporting", ImageBase64: "data:image/jpeg;base64,aW1hZ2Uy"},
+		},
+		Language: "ja",
+		Options:  model.RequestOptions{Stream: true, MaxSearchResults: 1},
+	}
+	resp, err := uc.Execute(context.Background(), ExecuteRequest{RequestID: "req", Request: req, MIMEType: "image/jpeg"})
+	if err != nil {
+		t.Fatalf("unexpected execute error: %v", err)
+	}
+	if resp.ResponseVersion != 2 {
+		t.Fatalf("expected v2 response, got %d", resp.ResponseVersion)
+	}
+	if resp.InputSummary == nil || resp.InputSummary.ImageCount != 2 || resp.InputSummary.Mode != "multi_image_stream" {
+		t.Fatalf("unexpected input summary: %#v", resp.InputSummary)
+	}
+	if resp.RecognizedObject.ObjectName != "2枚のサンプル物体" {
+		t.Fatalf("expected mock LLM to use image count, got %q", resp.RecognizedObject.ObjectName)
+	}
+	if resp.EvidenceFusion == nil || resp.EvidenceFusion.PrimaryImageID != "front" {
+		t.Fatalf("unexpected evidence fusion: %#v", resp.EvidenceFusion)
+	}
+}
+
+type imageAwareVision struct{}
+
+func (imageAwareVision) ExtractEvidence(ctx context.Context, req model.ExtractEvidenceRequest) (*model.ExtractEvidenceResponse, error) {
+	label := "unknown"
+	if strings.Contains(req.ImageDataURL, "aW1hZ2Ux") {
+		label = "front signal"
+	}
+	if strings.Contains(req.ImageDataURL, "aW1hZ2Uy") {
+		label = "label signal"
+	}
+	return &model.ExtractEvidenceResponse{Evidence: model.VisualEvidence{Labels: []model.EvidenceItem{{Text: label, Score: 0.9}}}, Provider: "stub"}, nil
+}
+
+func (imageAwareVision) Close() error { return nil }
+
+func TestExecuteMultiImageMergesEvidenceFromAllImages(t *testing.T) {
+	uc := &RecognizeSearchUsecase{LLM: &mock.Client{Model: "mock"}, Searcher: &mocksearch.Client{}, Vision: imageAwareVision{}, LLMProvider: "mock", SearchProvider: "mock"}
+	req := model.RecognizeSearchRequest{
+		Images: []model.ImageInput{
+			{ID: "front", Role: "primary", ImageBase64: "data:image/jpeg;base64,aW1hZ2Ux"},
+			{ID: "label", Role: "supporting", ImageBase64: "data:image/jpeg;base64,aW1hZ2Uy"},
+		},
+		Language: "en",
+		Options:  model.RequestOptions{Stream: true, MaxSearchResults: 1},
+	}
+	resp, err := uc.Execute(context.Background(), ExecuteRequest{RequestID: "req", Request: req, MIMEType: "image/jpeg"})
+	if err != nil {
+		t.Fatalf("unexpected execute error: %v", err)
+	}
+	if resp.RecognizedObject.VisualEvidence == nil || len(resp.RecognizedObject.VisualEvidence.Labels) != 2 {
+		t.Fatalf("expected merged labels from both images: %#v", resp.RecognizedObject.VisualEvidence)
+	}
+	texts := []string{resp.RecognizedObject.VisualEvidence.Labels[0].Text, resp.RecognizedObject.VisualEvidence.Labels[1].Text}
+	if texts[0] != "front: front signal" || texts[1] != "label: label signal" {
+		t.Fatalf("unexpected merged evidence texts: %#v", texts)
+	}
+	if len(resp.ImageAnalyses) != 2 {
+		t.Fatalf("expected per-image analyses, got %#v", resp.ImageAnalyses)
 	}
 }

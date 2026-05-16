@@ -47,6 +47,24 @@ export function ResultPanel({ data }: ResultPanelProps) {
 
       <p className="text-neutral-700 mb-6">{data.recognizedObject.description}</p>
 
+      {(data.inputSummary || data.evidenceFusion) && (
+        <div className="p-4 bg-white rounded-lg border border-neutral-200 mb-4">
+          <h3 className="text-sm font-semibold text-neutral-900 mb-2">複数画像の統合</h3>
+          {data.inputSummary && (
+            <p className="text-xs text-neutral-700">
+              {data.inputSummary.imageCount}枚の画像を統合 · primary: {data.inputSummary.primaryImageId}
+            </p>
+          )}
+          {data.evidenceFusion && (
+            <div className="mt-2 space-y-1 text-xs text-neutral-700">
+              <p>coverage: <span className="font-medium">{data.evidenceFusion.coverage}</span></p>
+              <p>agreement: <span className="font-medium">{data.evidenceFusion.agreement}</span></p>
+              {data.evidenceFusion.signals?.length ? <p>signals: {data.evidenceFusion.signals.join(", ")}</p> : null}
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="p-4 bg-white rounded-lg border border-neutral-200 mb-4">
         <h3 className="text-sm font-semibold text-neutral-900 mb-2">画像入力シグナル</h3>
         <div className="grid grid-cols-3 gap-2 text-xs text-neutral-700">

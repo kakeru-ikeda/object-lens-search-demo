@@ -13,7 +13,7 @@ fi
 
 export APP_ENV="${APP_ENV:-development}"
 export PORT="${PORT:-8080}"
-export ALLOWED_ORIGINS="${ALLOWED_ORIGINS:-http://localhost:5173}"
+export ALLOWED_ORIGINS="${ALLOWED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}"
 
 echo "Starting backend on http://localhost:${PORT} (APP_ENV=${APP_ENV})"
 cd "$BACKEND_DIR"

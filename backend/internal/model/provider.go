@@ -3,9 +3,20 @@ package model
 type RecognizeObjectRequest struct {
 	ImageDataURL   string
 	Crops          *ImageCrops
+	Images         []RecognizeImageInput
 	MIMEType       string
 	CropMIMETypes  map[string]string
 	Language       string
+	VisualEvidence *VisualEvidence
+}
+
+type RecognizeImageInput struct {
+	ID             string
+	Role           string
+	ImageDataURL   string
+	Crops          *ImageCrops
+	MIMEType       string
+	CropMIMETypes  map[string]string
 	VisualEvidence *VisualEvidence
 }
 

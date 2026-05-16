@@ -45,3 +45,54 @@ Implement the Google visual-search direction without customer-managed vector sea
 - Cloud Vision is an evidence layer, not vector search.
 - Cloud Vision failures should not break the full search path unless configuration requires provider startup and startup itself fails.
 - Runtime status must be explicit: disabled, measured, or error.
+
+
+## Added Phase: Multi-Image SSE Extension Design
+11. [complete] Investigate current single-image/crop flow and streaming gaps.
+12. [complete] Design max-5 image request model, evidence fusion, and streaming endpoint.
+13. [complete] Create `MULTI_IMAGE_SSE_DESIGN.md` for implementation planning.
+14. [pending] Implement multi-image/SSE extension in a later phase.
+
+## New Decisions - 2026-05-16
+- Keep existing `POST /api/recognize-search` as backward-compatible final JSON endpoint.
+- Add `POST /api/recognize-search-stream` using fetch + ReadableStream SSE framing because image JSON bodies do not fit native GET-only EventSource.
+- Treat accuracy as coverage/agreement/confidence progression, not an unmeasured numeric accuracy percentage.
+- Process up to five images into one integrated answer using fused Cloud Vision evidence and one integrated LLM recognition call where provider limits allow.
+
+## Errors Encountered - 2026-05-16
+| Error | Attempt | Resolution |
+|---|---|---|
+| JavaScript writer failed on markdown code fences in template literal | 1 | Rewrote file generation using Python raw string writer. |
+
+
+## 2026-05-17 Implementation update
+
+Status: local runnable implementation complete.
+
+Completed phases:
+1. Backend models/config/validation for v2 multi-image requests.
+2. Backend SSE endpoint and shared usecase event emission.
+3. Middleware compatibility for `http.Flusher`.
+4. Frontend stream API client, hook, multi-image capture tray, event timeline, and final result display.
+5. Local verification with backend tests/build/vet, frontend typecheck/build, and mock SSE progressive stream.
+
+Open follow-up for production refinement:
+- Extend real Bedrock prompt construction to send all images natively instead of primary-image normalization.
+- Extend Cloud Vision extraction to run per-image worker-limited extraction when enabled.
+- Run deployed Cloud Run progressive flush gate after deployment infrastructure is available.
+
+
+## 2026-05-17 Final implementation status after review
+
+Status: complete after blocker fixes.
+
+Resolved review blockers:
+- Secondary images now contribute to LLM request data and mock final result.
+- Vision extraction now supports all images and merges evidence with image-id prefixes.
+- SSE event emission is race-safe and verified with `go test -race`.
+- Heartbeat goroutine stops before handler return.
+- Base64 byte accounting and inputSummary mode semantics fixed.
+
+All local verification gates passed. Remaining production-only work:
+- Deploy-time Cloud Run progressive flush gate.
+- Provider-specific optimization for native Bedrock multi-image content and worker-limited Cloud Vision concurrency beyond current sequential multi-image extraction.

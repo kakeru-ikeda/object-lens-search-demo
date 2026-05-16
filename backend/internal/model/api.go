@@ -5,8 +5,16 @@ import "encoding/json"
 type RecognizeSearchRequest struct {
 	ImageBase64 string         `json:"imageBase64,omitempty"`
 	Crops       *ImageCrops    `json:"crops,omitempty"`
+	Images      []ImageInput   `json:"images,omitempty"`
 	Language    string         `json:"language,omitempty"`
 	Options     RequestOptions `json:"options,omitempty"`
+}
+
+type ImageInput struct {
+	ID          string      `json:"id,omitempty"`
+	Role        string      `json:"role,omitempty"`
+	ImageBase64 string      `json:"imageBase64,omitempty"`
+	Crops       *ImageCrops `json:"crops,omitempty"`
 }
 
 type ImageCrops struct {
@@ -18,6 +26,8 @@ type ImageCrops struct {
 type RequestOptions struct {
 	MaxSearchResults int  `json:"maxSearchResults,omitempty"`
 	EnableMultiCrop  bool `json:"enableMultiCrop,omitempty"`
+	MaxImages        int  `json:"maxImages,omitempty"`
+	Stream           bool `json:"stream,omitempty"`
 }
 
 type EvidenceItem struct {
@@ -82,12 +92,39 @@ type NormalizedSearchResult struct {
 
 type RecognizeSearchResponse struct {
 	RequestID        string           `json:"requestId"`
+	ResponseVersion  int              `json:"responseVersion,omitempty"`
 	QueryQuality     QueryQuality     `json:"queryQuality"`
 	RecognizedObject RecognizedObject `json:"recognizedObject"`
 	Ambiguity        Ambiguity        `json:"ambiguity"`
 	Search           SearchSection    `json:"search"`
 	Summary          Summary          `json:"summary"`
 	Meta             Meta             `json:"meta"`
+	InputSummary     *InputSummary    `json:"inputSummary,omitempty"`
+	ImageAnalyses    []ImageAnalysis  `json:"imageAnalyses,omitempty"`
+	EvidenceFusion   *EvidenceFusion  `json:"evidenceFusion,omitempty"`
+}
+
+type InputSummary struct {
+	ImageCount     int      `json:"imageCount"`
+	PrimaryImageID string   `json:"primaryImageId"`
+	ImageIDs       []string `json:"imageIds"`
+	Roles          []string `json:"roles,omitempty"`
+	Mode           string   `json:"mode"`
+}
+
+type ImageAnalysis struct {
+	ImageID       string          `json:"imageId"`
+	Role          string          `json:"role,omitempty"`
+	EvidenceTypes []string        `json:"evidenceTypes,omitempty"`
+	Status        string          `json:"status"`
+	Evidence      *VisualEvidence `json:"evidence,omitempty"`
+}
+
+type EvidenceFusion struct {
+	Coverage       string   `json:"coverage"`
+	Agreement      string   `json:"agreement"`
+	Signals        []string `json:"signals,omitempty"`
+	PrimaryImageID string   `json:"primaryImageId"`
 }
 
 type QueryQuality struct {

@@ -166,3 +166,62 @@
 
 ## 2026-05-14 latency logic optimization
 - Avoided cache for MVP. Added stage latency metadata, compacted Bedrock summary input to quality-preserving fields, and made Tavily use parent request context instead of a separate fixed 20s client timeout.
+
+
+## 2026-05-16T00:00:00+09:00
+- User requested additional design for up to 5 input images combined into one result, plus SSE frontend showing staged accuracy/refinement.
+- Investigated existing frontend/backend flow and confirmed no existing SSE implementation.
+- First attempt to write design through a JavaScript template failed because markdown code fences broke the template literal; switched to Python raw string writer.
+- Created `MULTI_IMAGE_SSE_DESIGN.md` with API, backend, frontend, SSE event schema, failure handling, and rollout plan.
+
+- Oracle reviewed the design and found schema/compatibility issues: final response was not a true superset, `images[]` exclusivity was missing, `RequestOptions` fields were not modeled, SSE envelope timing was inconsistent, and streaming API client details were underspecified.
+- Updated `MULTI_IMAGE_SSE_DESIGN.md` to address those review findings.
+
+- Fixed remaining SSE example inconsistency so `elapsedMs` is top-level in examples too.
+- Added top-level `elapsedMs` to the fusion SSE example.
+- Converted multi-image/SSE design caveats into fixed implementation decisions: explicit size/time limits, no auto-search, fixed Cloud Vision path, compact LLM retry, and final responseVersion.
+- Replaced remaining weak design wording (`should`/`recommended`) with final mandatory wording.
+
+- Final Oracle review found three blockers: event-name mismatch, missing `elapsedMs` in frontend stream type, and Cloud Run/proxy caveat wording.
+- Fixed design by adding `summary_completed`, adding `elapsedMs` to `StreamProgressEvent`, and making progressive flush checks a release gate.
+
+
+## 2026-05-17 Implementation session
+
+- Implemented backend multi-image SSE endpoint `POST /api/recognize-search-stream`.
+- Added v2 request/response models: `images[]`, `responseVersion`, `inputSummary`, `imageAnalyses`, `evidenceFusion`.
+- Added stream events through shared usecase path: `request_received`, `vision_started`, `vision_completed`, `recognition_started`, `recognition_completed`, `search_started`, `search_completed`, `summary_started`, `summary_completed`, `final`, `error`.
+- Added SSE writer with `http.Flusher`, `X-Accel-Buffering: no`, heartbeat comments, and local progressive flush validation.
+- Fixed logging middleware to preserve `http.Flusher` so streaming works through middleware wrappers.
+- Added config/env support for `MAX_IMAGE_BYTES`, `MAX_TOTAL_IMAGE_BYTES`, `MAX_REQUEST_BYTES=14680064`, and `STREAM_REQUEST_TIMEOUT_SECONDS=120`.
+- Updated CORS allowed headers to include `Accept` for `text/event-stream` requests.
+- Implemented frontend `fetch + ReadableStream` SSE parser, stream hook, multi-image tray, progress timeline, and result fusion summary.
+
+Verification:
+- `cd backend && go test ./...` passed.
+- `cd backend && go build ./cmd/server` passed.
+- `cd backend && go vet ./...` passed.
+- `cd frontend && npm run typecheck` passed.
+- `cd frontend && npm run build` passed.
+- Local mock SSE stream on port 18080 passed: status 200, 10 events, first event within 1s, >=2 events before final, final responseVersion=2.
+- Frontend LSP diagnostics passed for modified TS/TSX files.
+- Go LSP diagnostics could not run because `gopls` is not installed; Go compiler/test/vet passed instead.
+
+
+## 2026-05-17 Review blocker fixes
+
+- Goal review failed because secondary images did not affect service/data flow. Fixed by passing all `images[]` into `RecognizeObjectRequest.Images`, updating mock LLM output to reflect image count, and adding multi-image evidence extraction/merge across all images when Vision is enabled.
+- Code quality review failed on concurrent `eventEmitter.sequence` access. Fixed by adding a mutex around sequence assignment and sink emission.
+- Heartbeat lifecycle tightened: stream handler now cancels heartbeat and waits for goroutine exit before returning.
+- Base64 size accounting now uses decoded byte length after successful decode instead of `DecodedLen` maximum.
+- `inputSummary.mode` now returns `multi_image` for non-stream `images[]` and `multi_image_stream` only for stream requests.
+- Added tests proving multi-image mock recognition changes final object and multi-image Vision evidence merges labels from all images.
+
+Re-verification:
+- `cd backend && go test ./...` passed.
+- `cd backend && go test -race ./internal/usecase ./internal/handler` passed.
+- `cd backend && go build ./cmd/server` passed.
+- `cd backend && go vet ./...` passed.
+- `cd frontend && npm run typecheck` passed.
+- `cd frontend && npm run build` passed.
+- Local mock SSE passed with 2 images: status 200, 10 events, first event <1s, >=2 events before final, final object `2枚のサンプル物体`, imageCount=2, responseVersion=2.

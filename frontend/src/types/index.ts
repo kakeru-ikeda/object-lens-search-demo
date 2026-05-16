@@ -64,6 +64,7 @@ export interface Ambiguity {
 
 export interface RecognizeSearchResponse {
   requestId: string;
+  responseVersion?: number;
   queryQuality: QueryQuality;
   recognizedObject: RecognizedObject;
   ambiguity: Ambiguity;
@@ -85,16 +86,84 @@ export interface RecognizeSearchResponse {
       summarizeMs: number;
     };
   };
+  inputSummary?: InputSummary;
+  imageAnalyses?: ImageAnalysis[];
+  evidenceFusion?: EvidenceFusion;
+}
+
+export interface ImageInput {
+  id?: string;
+  role?: 'primary' | 'supporting' | string;
+  imageBase64?: string;
+  crops?: ImageCrops;
+}
+
+export interface InputSummary {
+  imageCount: number;
+  primaryImageId: string;
+  imageIds: string[];
+  roles?: string[];
+  mode: string;
+}
+
+export interface ImageAnalysis {
+  imageId: string;
+  role?: string;
+  evidenceTypes?: string[];
+  status: string;
+  evidence?: VisualEvidence;
+}
+
+export interface EvidenceFusion {
+  coverage: string;
+  agreement: string;
+  signals?: string[];
+  primaryImageId: string;
+}
+
+export type StreamStage =
+  | 'request_received'
+  | 'vision_started'
+  | 'vision_completed'
+  | 'recognition_started'
+  | 'recognition_completed'
+  | 'search_started'
+  | 'search_completed'
+  | 'summary_started'
+  | 'summary_completed'
+  | 'final'
+  | 'error'
+  | string;
+
+export interface StreamProgressEvent {
+  requestId: string;
+  sequence: number;
+  stage: StreamStage;
+  status: 'queued' | 'started' | 'completed' | 'warning' | 'error' | string;
+  elapsedMs: number;
+  imageId?: string;
+  message: string;
+  payload?: {
+    response?: RecognizeSearchResponse;
+    code?: string;
+    [key: string]: unknown;
+  };
 }
 
 export interface RecognizeSearchRequest {
   imageBase64?: string;
   crops?: ImageCrops;
+  images?: ImageInput[];
   language?: string;
   options?: {
     maxSearchResults?: number;
     enableMultiCrop?: boolean;
+    maxImages?: number;
+    stream?: boolean;
   };
+  inputSummary?: InputSummary;
+  imageAnalyses?: ImageAnalysis[];
+  evidenceFusion?: EvidenceFusion;
 }
 
 export interface ErrorResponse {
@@ -103,4 +172,7 @@ export interface ErrorResponse {
     message: string;
     requestId: string;
   };
+  inputSummary?: InputSummary;
+  imageAnalyses?: ImageAnalysis[];
+  evidenceFusion?: EvidenceFusion;
 }
