@@ -1,12 +1,15 @@
 # Object Lens Search Demo
 
-Camera-based object search MVP. Frontend captures the object inside the overlay, backend recognizes it with Bedrock, searches with Tavily, normalizes results, and returns a short summary.
+Camera-based object search MVP. Frontend captures one or more cropped object images, backend can enrich them with Google Cloud Vision evidence, recognizes the object with Amazon Bedrock, searches with Tavily, normalizes results, and returns a short summary.
 
 ## Stack
-- Frontend: React + Vite + TypeScript 7.0 beta via `@typescript/native-preview@beta` and `tsgo`
-- Backend: Go + net/http
-- LLM: Amazon Bedrock
-- Search: Tavily
+- Frontend: React 18 + Vite 8 + TypeScript 7.0 beta via `@typescript/native-preview@beta` and `tsgo`
+- UI: Tailwind CSS + lucide-react
+- Backend: Go 1.22 + `net/http`
+- LLM: Amazon Bedrock (`LLM_PROVIDER=bedrock`; mock fallback outside production)
+- Search: Tavily (`SEARCH_PROVIDER=tavily`; mock fallback outside production)
+- Vision evidence layer: Google Cloud Vision, optional via `CLOUD_VISION_ENABLED`, using Web Detection, OCR/Text Detection, Logo Detection, and Label Detection
+- Hosting/deploy: Cloud Run backend, Artifact Registry + Cloud Build images, Secret Manager secrets, GitHub Pages frontend
 
 ## Local frontend
 
@@ -92,7 +95,17 @@ go test ./...
 ./bin/dev
 ```
 
-Without production credentials, local development can use mock fallback outside `APP_ENV=production`. Production must set Bedrock and Tavily environment variables.
+Without production credentials, local development can use mock fallback outside `APP_ENV=production`. Production must set Bedrock and Tavily environment variables. Cloud Vision is optional locally and is controlled by:
+
+```bash
+CLOUD_VISION_ENABLED=false
+CLOUD_VISION_PROVIDER=cloudvision
+GCP_PROJECT_ID=replace-with-gcp-project-id
+GCP_REGION=us-central1
+GOOGLE_APPLICATION_CREDENTIALS=/absolute/path/to/service-account.json
+```
+
+When enabled, Cloud Vision runs before LLM synthesis and contributes OCR text, logo hits, web entities, best-guess labels, matching image URLs, and visual labels.
 
 ## Deployment
 
@@ -106,6 +119,7 @@ Prerequisites:
 - Google Cloud project `object-lens-search` exists.
 - Billing is enabled for the project.
 - AWS Bedrock credentials and Tavily API key are available outside git.
+- Cloud Vision is enabled in the production deploy template; the Cloud Run runtime identity must be allowed to call Vision API.
 
 Create Secret Manager entries for the sensitive values. Do not commit these values to `.env` files:
 
@@ -150,8 +164,10 @@ SERVICE_NAME=object-lens-search-api
 ALLOWED_ORIGINS=https://kakeru-ikeda.github.io
 APP_ENV=production
 AWS_REGION=us-east-1
-BEDROCK_MODEL_ID=anthropic.claude-3-5-sonnet-20241022-v1:0
-CLOUD_VISION_ENABLED=false
+BEDROCK_MODEL_ID=global.anthropic.claude-sonnet-4-5-20250929-v1:0
+CLOUD_VISION_ENABLED=true
+GCP_PROJECT_ID=object-lens-search
+GCP_REGION=asia-northeast1
 # Optional custom runtime identity:
 # SERVICE_ACCOUNT=object-lens-runner@object-lens-search.iam.gserviceaccount.com
 GRANT_SECRET_ACCESS=true
@@ -164,7 +180,7 @@ cd backend
 ./bin/deploy
 ```
 
-The script runs Go tests/build/vet, enables required Google Cloud APIs, creates an Artifact Registry repository if missing, builds the Docker image with Cloud Build, deploys Cloud Run, and prints the service URL.
+The script runs Go tests/build/vet, enables required Google Cloud APIs, creates an Artifact Registry repository if missing, builds the Docker image with Cloud Build, deploys Cloud Run, and prints the service URL. When `CLOUD_VISION_ENABLED=true`, it also enables `vision.googleapis.com` and passes `CLOUD_VISION_PROVIDER=cloudvision`, `GCP_PROJECT_ID`, and `GCP_REGION` to Cloud Run.
 
 Useful checks after deployment:
 
