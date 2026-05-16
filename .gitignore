@@ -12,6 +12,8 @@ backend/server
 .env.*.local
 frontend/.env
 backend/.env
+backend/service-account*.json
+backend/*service-account*.json
 
 # Logs
 *.log

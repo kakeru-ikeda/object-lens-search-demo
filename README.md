@@ -14,32 +14,54 @@ Camera-based object search MVP. Frontend captures the object inside the overlay,
 cd frontend
 npm install
 npm run typecheck
-npm run dev
+./bin/dev
 ```
 
 Set `VITE_API_BASE_URL` when the backend is not running at `http://localhost:8080`.
 
-## Smartphone camera testing
+## Smartphone as PC webcam testing
 
-Camera access requires a secure context. `http://localhost:5173` works on the PC because localhost is treated as secure, but `http://<PC-LAN-IP>:5173` from a smartphone is not secure, so the browser will not show a camera permission prompt.
+Use this when you want the phone camera to appear as a PC webcam in the desktop browser.
 
-Recommended quick tunnel:
+Requirements for HTTP/MJPEG mode:
+
+- A phone webcam app that exposes an MJPEG/HTTP video URL, for example `http://PHONE_IP:8080/video`.
+- `v4l2loopback` on the PC.
+- `ffmpeg` on the PC.
+
+Create a virtual webcam device:
+
+```bash
+sudo modprobe v4l2loopback devices=1 video_nr=10 card_label="Phone Camera" exclusive_caps=1
+```
+
+Start Vite and pipe the phone stream into `/dev/video10`:
 
 ```bash
 cd frontend
-npm run dev -- --host 127.0.0.1
-cloudflared tunnel --url http://127.0.0.1:5173
+PHONE_CAM_URL="http://PHONE_IP:8080/video" ./bin/dev-phone
 ```
 
-Open the generated `https://*.trycloudflare.com` URL on the smartphone.
-
-If the backend runs on the PC, expose it too or set the frontend env before starting Vite:
+USB Android alternative with `scrcpy`:
 
 ```bash
-VITE_API_BASE_URL=https://<backend-tunnel-url> npm run dev -- --host 127.0.0.1
+sudo modprobe v4l2loopback devices=1 video_nr=10 card_label="Phone Camera" exclusive_caps=1
+cd frontend
+PHONE_CAM_MODE=scrcpy ./bin/dev-phone
 ```
 
-Alternative: use `ngrok http 5173`, or use `mkcert` with a trusted certificate installed on the smartphone.
+`PHONE_CAM_MODE=auto` chooses HTTP mode when `PHONE_CAM_URL` is set, otherwise tries `scrcpy` if an adb device is connected.
+
+Optional overrides:
+
+```bash
+PHONE_CAM_MODE=auto|http|scrcpy
+VIDEO_DEVICE=/dev/video10
+VIDEO_SIZE=1280x720
+VIDEO_FPS=30
+```
+
+In the desktop browser camera picker, choose `Phone Camera`.
 
 
 ## Local backend
@@ -48,7 +70,7 @@ Alternative: use `ngrok http 5173`, or use `mkcert` with a trusted certificate i
 cd backend
 cp .env.example .env
 go test ./...
-go run ./cmd/server
+./bin/dev
 ```
 
 Without production credentials, local development can use mock fallback outside `APP_ENV=production`. Production must set Bedrock and Tavily environment variables.

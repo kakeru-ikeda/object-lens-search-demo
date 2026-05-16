@@ -14,6 +14,8 @@ import (
 	"object-lens-search-demo/backend/internal/model"
 )
 
+var defaultHTTPClient = &http.Client{Timeout: 20 * time.Second}
+
 type Client struct {
 	APIKey     string
 	Endpoint   string
@@ -64,7 +66,7 @@ func (c *Client) Search(ctx context.Context, req model.SearchRequest) (*model.Se
 	httpReq.Header.Set("Content-Type", "application/json")
 	client := c.HTTPClient
 	if client == nil {
-		client = &http.Client{Timeout: 20 * time.Second}
+		client = defaultHTTPClient
 	}
 	resp, err := client.Do(httpReq)
 	if err != nil {

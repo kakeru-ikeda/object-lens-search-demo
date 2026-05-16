@@ -1,44 +1,98 @@
-# Task Plan: Object Lens Search MVP Implementation
+# Task Plan: No-Vector Google Visual Search Implementation
 
 ## Goal
-Implement the DESIGN.md backend MVP: Go API with Bedrock + Tavily provider boundaries.
+Implement the Google visual-search direction without customer-managed vector search, vector databases, embedding indexes, or Vector Search collections.
 
 ## Scope
-- Backend /healthz and /api/recognize-search with validation, CORS, rate limit, request ID, JSON logging.
-- Provider interfaces: VisionLLM and WebSearcher.
-- Mock fallback, Bedrock adapter, Tavily adapter, normalized models.
-- Backend .env.example and Dockerfile.
+- Preserve the current Bedrock + Tavily MVP flow.
+- Keep multi-crop input and query-quality scaffolding.
+- Remove Vertex AI embedding and Vector Search provider implementation.
+- Keep the future path focused on Cloud Vision Web Detection, OCR, Logo Detection, Label Detection, optional Product Recognizer, and LLM/Tavily evidence synthesis.
 
 ## Phases
-1. [complete] Restore planning context and read DESIGN.md backend requirements.
-2. [complete] Scaffold backend Go module structure and config.
-3. [complete] Implement backend models, middleware, handlers, usecase.
-4. [complete] Implement mock, Bedrock, and Tavily providers.
-5. [complete] Add backend env example, Dockerfile, and tests.
-6. [complete] Verify with gofmt, diagnostics, go test, and go build.
-6. [pending] Verify with gofmt, diagnostics, go test, and go build.
+1. [complete] Create implementation branch `feat/google-visual-search`.
+2. [complete] Add multi-crop request/response scaffolding.
+3. [complete] Analyze and remove Vector Search / embedding implementation after user clarified no-vector requirement.
+4. [complete] Update frontend and backend response schema to remove visualMatches/visualSearch vector-search fields.
+5. [complete] Rewrite architecture document as no-vector Google visual-search design.
+6. [in_progress] Verify with grep, backend tests/build/vet, frontend typecheck/build, and Oracle review.
 
 ## Decisions
-- Backend: Go net/http to avoid unnecessary router dependencies.
-- MVP providers: Bedrock + Tavily fixed by env; mock mode allowed only when APP_ENV != production and credentials/config are missing, or provider env explicitly mock.
-- Do not touch frontend/.
+- No `backend/internal/embedding/` package.
+- No `backend/internal/visualsearch/` package.
+- No `ENABLE_VISUAL_SEARCH`, `VERTEX_EMBEDDING_*`, or `VECTOR_SEARCH_*` env vars.
+- No Vector Search collection setup requirement.
+- Future Google work should add Cloud Vision evidence extraction instead of vector DB search.
+- Query quality remains `unknown` / `not_measured` until actual image-quality/OCR logic exists.
 
 ## Errors Encountered
 | Error | Attempt | Resolution |
 |-------|---------|------------|
-| gopls not installed for lsp_diagnostics | 1 | Used go vet ./... as Go diagnostics fallback; go test/build passed. |
+| Existing plan drifted into Vector Search despite no-vector requirement | 1 | Rewrote plan and removed Vector Search/embedding implementation. |
+| `gopls` not installed for Go LSP diagnostics | 1 | Use `go test`, `go build`, and `go vet` as fallback diagnostics. |
 
 ## Last Updated
-2026-05-12T12:30:00.000Z
+2026-05-13T02:20:00+09:00
 
-7. [complete] Fix review blockers.
 
-## Review Fixes
-- Fixed late getUserMedia stream cleanup in frontend camera hook.
-- Fixed object-cover crop coordinate mapping.
-- Fixed rate limiter IP normalization and expired bucket pruning.
-- Replaced backend internal error details with public messages.
-- Improved frontend API error parsing and close UX.
+## Added Phase: Real Cloud Vision Evidence Integration
+7. [in_progress] Add no-vector Cloud Vision evidence provider for Web Detection, OCR, Logo Detection, and Label Detection.
+8. [pending] Feed Cloud Vision evidence into Bedrock recognition/search-query synthesis.
+9. [pending] Expose evidence and measured status in API/UI.
+10. [pending] Verify backend/frontend builds, tests, vet/typecheck, and implementation review.
 
-## Last Updated
-2026-05-12T12:08:21.564876+00:00
+## New Decisions
+- Cloud Vision is an evidence layer, not vector search.
+- Cloud Vision failures should not break the full search path unless configuration requires provider startup and startup itself fails.
+- Runtime status must be explicit: disabled, measured, or error.
+
+
+## Added Phase: Multi-Image SSE Extension Design
+11. [complete] Investigate current single-image/crop flow and streaming gaps.
+12. [complete] Design max-5 image request model, evidence fusion, and streaming endpoint.
+13. [complete] Create `MULTI_IMAGE_SSE_DESIGN.md` for implementation planning.
+14. [pending] Implement multi-image/SSE extension in a later phase.
+
+## New Decisions - 2026-05-16
+- Keep existing `POST /api/recognize-search` as backward-compatible final JSON endpoint.
+- Add `POST /api/recognize-search-stream` using fetch + ReadableStream SSE framing because image JSON bodies do not fit native GET-only EventSource.
+- Treat accuracy as coverage/agreement/confidence progression, not an unmeasured numeric accuracy percentage.
+- Process up to five images into one integrated answer using fused Cloud Vision evidence and one integrated LLM recognition call where provider limits allow.
+
+## Errors Encountered - 2026-05-16
+| Error | Attempt | Resolution |
+|---|---|---|
+| JavaScript writer failed on markdown code fences in template literal | 1 | Rewrote file generation using Python raw string writer. |
+
+
+## 2026-05-17 Implementation update
+
+Status: local runnable implementation complete.
+
+Completed phases:
+1. Backend models/config/validation for v2 multi-image requests.
+2. Backend SSE endpoint and shared usecase event emission.
+3. Middleware compatibility for `http.Flusher`.
+4. Frontend stream API client, hook, multi-image capture tray, event timeline, and final result display.
+5. Local verification with backend tests/build/vet, frontend typecheck/build, and mock SSE progressive stream.
+
+Open follow-up for production refinement:
+- Extend real Bedrock prompt construction to send all images natively instead of primary-image normalization.
+- Extend Cloud Vision extraction to run per-image worker-limited extraction when enabled.
+- Run deployed Cloud Run progressive flush gate after deployment infrastructure is available.
+
+
+## 2026-05-17 Final implementation status after review
+
+Status: complete after blocker fixes.
+
+Resolved review blockers:
+- Secondary images now contribute to LLM request data and mock final result.
+- Vision extraction now supports all images and merges evidence with image-id prefixes.
+- SSE event emission is race-safe and verified with `go test -race`.
+- Heartbeat goroutine stops before handler return.
+- Base64 byte accounting and inputSummary mode semantics fixed.
+
+All local verification gates passed. Remaining production-only work:
+- Deploy-time Cloud Run progressive flush gate.
+- Provider-specific optimization for native Bedrock multi-image content and worker-limited Cloud Vision concurrency beyond current sequential multi-image extraction.

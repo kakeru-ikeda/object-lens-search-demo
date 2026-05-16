@@ -1,266 +1,170 @@
-# Findings: Vector Search + Web Search Architecture
+# Findings: No-Vector Google Visual Search
 
-## Phase 1: Document Discovery & OSS Examples
+## Current direction
 
-### Local Image Vector Search (CLIP-based)
+The project now explicitly avoids customer-managed vector search, vector databases, embedding indexes, and Vector Search collections.
 
-**Key OSS Projects (2026)**:
+The chosen direction is:
 
-1. **pixmap** (altamsh04/pixmap)
-   - On-device CLIP embeddings + HNSW indexing + SQLite
-   - Stack: @xenova/transformers (CLIP ViT-B/32 via ONNX), sharp, hnswlib-node, better-sqlite3
-   - 512-dim embeddings, ~2KB per image, 100K images ≈ 220MB
-   - CLI: `pixmap add ./photo.jpg`, `pixmap search ./query.jpg -k 10`
-   - No cloud, no API keys, images stay private
-
-2. **local-image-search** (Eventual-Inc)
-   - MLX CLIP (Apple Silicon optimized) + Lance vector DB + Daft batch processing
-   - 260+ images/sec on M1/M2/M3/M4
-   - MCP server for Claude integration
-   - Natural language search: embed query → Lance retrieval
-   - Cached embeddings in `embeddings.lance/`
-
-3. **image-archive-search** (PyPI v0.1.0, 2026-04-08)
-   - CLIP zero-shot enrichment + FAISS + SQLite + FastAPI
-   - Incremental indexing, text + image-to-image search
-   - Folder/date/content-type filtering
-   - Structured enrichment: tags, styles, objects via CLIP zero-shot
-   - Optional Ollama backend for richer VLM enrichment
-
-4. **CLIP-database** (droon/CLIP-database)
-   - SigLIP 2 embeddings (1152-dim) + sqlite-vec
-   - Text search, image search, combined search with weighted blending
-   - Interactive mode: load model once, run multiple queries
-   - HTML gallery output with `localexplorer:` protocol links
-
-5. **Zebra Frontline AI Product Recognition**
-   - Feature Extractor → Feature Storage (vector DB) → Recognizer
-   - FAISS index + SKU labels
-   - Supports bounding box regions (for shelf/product localization)
-   - Retail-optimized: shelf detection + product cropping + recognition
-
-### Web Image Search Integration
-
-**Tavily Search (2026 Update)**:
-- `include_images=true` returns source-linked images on each result
-- Per-result `images` array: diagrams, charts, screenshots, product visuals
-- No separate image search needed; text + images in single response
-- `include_image_descriptions=true` for AI-generated descriptions
-- Works across all search depths (basic/advanced)
-
-**Google Vision API Product Search**:
-- Catalog → ProductSet → Index → Endpoint → BatchAnalyze
-- Visual embedding + OCR text signals for recognition
-- Supported categories: homegoods, apparel, toys, packaged goods, general
-- GTIN/UPC-level product identity
-
-**Google Vertex AI Product Recognizer**:
-- Product visual embedding model
-- OCR extraction
-- Entity extraction (customizable key-value pairs)
-- Recognizes products at GTIN/UPC level
-
-### Barcode/OCR Augmentation
-
-**Zebra Product Recognition**:
-- Feature Extractor generates descriptors from images or bounding boxes
-- Recognizer finds top-K matches from FAISS index
-- SKU labels stored alongside embeddings
-- Supports barcode/OCR preprocessing before recognition
-
-**Google Vision OCR**:
-- Extracts all visible text from images
-- Combined with visual embeddings for product matching
-- Entity extraction for structured data (brand, size, etc.)
-
-### Semantic Product Search Architecture (2026)
-
-**Hybrid Search Pattern** (XICTRON blog, 2026-04-30):
-- Dense search (vector embeddings) + Sparse search (BM25)
-- Reciprocal Rank Fusion (RRF): +15-30% recall over single methods
-- Cross-encoder reranking on top-K candidates (20-80ms latency)
-- Total latency: 50-200ms (embedding 10-50ms, HNSW 7-16ms, rerank 20-80ms)
-- Handles synonyms, intent variants, long-tail queries
-- Conversion uplift: 2-3x higher (Algolia), Amazon 2% → 12%
-
-## Phase 2: Architecture Patterns (Emerging)
-
-### Pattern 1: LLM Label → Web Search → Image Crawl → Local Index
-
-```
-User Image
+```text
+multi-crop image input
   ↓
-[Bedrock Vision] → "Coca-Cola Classic Can"
+Cloud Vision evidence extraction
+  ├─ Web Detection
+  ├─ OCR / text detection
+  ├─ Logo Detection
+  └─ Label Detection
   ↓
-[Tavily Search] → Web results + source-linked images
+LLM evidence synthesis
   ↓
-[Image Crawl] → Top 5-10 product images from results
+Tavily/web corroboration
   ↓
-[CLIP Embed] → 512-dim vectors
-  ↓
-[HNSW Index] → Local catalog (SQLite metadata)
-  ↓
-[Future Query] → "Red can with white label" → vector search
+answer + ambiguity handling
 ```
 
-**Pros**:
-- Live web retrieval for latest products
-- Persistent local index for fast repeat queries
-- Combines LLM reasoning + vector similarity
+## Why Vector Search was removed
 
-**Cons**:
-- Crawling ToS concerns (see Phase 5)
-- Rate limits on Tavily (1000 credits/month free)
-- Image quality/relevance varies
+- User clarified that vector search should not be required.
+- Vector Search requires creating and maintaining a collection/index of product image vectors.
+- That setup conflicts with the desired simpler Google/web-connected search approach.
+- The app should not require `VECTOR_SEARCH_COLLECTION_ID`, `image_embedding`, or product image vector ingestion.
 
-### Pattern 2: Persistent Catalog + Live Web Fallback
+## What remains useful
 
-```
-User Image
-  ↓
-[CLIP Embed] → 512-dim vector
-  ↓
-[Local HNSW Search] → Top-K matches from indexed catalog
-  ↓
-If confidence < threshold:
-  → [Tavily Search] → "Coca-Cola" + include_images
-  → [Update Index] → Add new images to catalog
-```
+### Cloud Vision Web Detection
 
-**Pros**:
-- Fast local search first
-- Web search only when needed
-- Reduces API calls
+Closest public Google Cloud feature to Lens-like web visual evidence without owning a vector DB.
 
-**Cons**:
-- Requires pre-populated catalog
-- Stale products not discovered
+Useful outputs:
 
-### Pattern 3: Barcode/OCR → Product DB Lookup → Vector Refinement
+- web entities.
+- full matching images.
+- partial matching images.
+- visually similar images from public web evidence.
+- best guess labels.
 
-```
-User Image
-  ↓
-[Barcode Detection] → UPC/GTIN extracted
-  ↓
-[Product DB Lookup] → Exact match (Google Product DB or custom)
-  ↓
-If no match:
-  → [CLIP Embed] → Vector search
-  → [Tavily Search] → "UPC 049000050127" (Coca-Cola)
-```
+### OCR / Logo / Label Detection
 
-**Pros**:
-- Deterministic for barcoded products
-- Fallback to fuzzy matching
+Strong fit for packaged products such as Coca-Cola cans:
 
-**Cons**:
-- Requires barcode visibility
-- Product DB maintenance
+- OCR can find `Coca-Cola`, `Zero Sugar`, `Original Taste`, size, and region text.
+- Logo Detection can confirm brand.
+- Label Detection can supply coarse category like beverage/can/bottle.
 
-## Phase 3: Coca-Cola Can Demo Case
+### Product Recognizer
 
-**Scenario**: User points camera at Coca-Cola Classic can.
+Optional later layer for GTIN/UPC or retail product hints. It may use Google-managed visual recognition internally, but does not require this app to own a vector collection.
 
-**Flow**:
-1. Frontend captures image, sends to backend
-2. Bedrock Vision: "Coca-Cola Classic Can, red label, white text"
-3. Tavily Search: `query="Coca-Cola Classic Can"`, `include_images=true`
-   - Returns: Wikipedia, official Coca-Cola, retail sites + product images
-4. Extract top 3-5 images from results
-5. CLIP embed each image → 512-dim vectors
-6. Store in local HNSW index with metadata:
-   ```json
-   {
-     "id": "coca-cola-classic-1",
-     "sku": "049000050127",
-     "source_url": "https://...",
-     "embedding": [0.123, -0.456, ...],
-     "metadata": {
-       "product_name": "Coca-Cola Classic",
-       "size": "12 oz",
-       "region": "US",
-       "indexed_date": "2026-05-12"
-     }
-   }
-   ```
-7. Future queries: "red soda can" → embed → HNSW search → top-K results
+### LLM + Tavily
 
-**Barcode Augmentation**:
-- If barcode detected: UPC 049000050127 → Coca-Cola Classic (deterministic)
-- Confidence boost in vector search results
+Current MVP path remains valuable:
 
-## Phase 4: Live Web Retrieval vs. Persistent Catalog
+- LLM recognizes the image and creates a search query.
+- Tavily retrieves web results.
+- LLM summarizes and explains evidence.
 
-| Aspect | Live Web (Tavily) | Persistent Catalog (Local) |
-|--------|-------------------|---------------------------|
-| **Latency** | 500-2000ms | 10-50ms |
-| **Freshness** | Real-time | Stale (last indexed) |
-| **Cost** | API credits | Storage (~2KB/image) |
-| **Privacy** | Queries sent to Tavily | 100% local |
-| **Coverage** | All products on web | Only indexed products |
-| **Use Case** | Discovery, new products | Repeat queries, known catalog |
+## Tradeoffs without Vector Search
 
-**Hybrid Recommendation**:
-- Index top 100-1000 products locally (Coca-Cola variants, competitors)
-- Live web search for unknown products
-- Update local index weekly from web results
+| Capability | Result without Vector Search |
+|---|---|
+| Private catalog image similarity | Not supported |
+| Product DB management | Not required |
+| Setup burden | Lower |
+| Exact SKU visual matching | Weaker |
+| Coca-Cola-style brand/package recognition | Still possible through OCR/logo/web entities |
+| Lens-like web evidence | Possible via Web Detection |
 
-## Phase 5: Legal & Rate-Limit Concerns
+## Implementation implications
 
-### Web Scraping / Image Crawling
+Keep:
 
-**Caveats**:
-1. **Terms of Service**: Most sites prohibit automated image crawling
-   - Google Images ToS: "You may not use the Images for any purpose other than as part of the Google Images search results"
-   - Tavily: Respects robots.txt, but crawling images from results may violate source site ToS
-   
-2. **Copyright**: Product images are copyrighted
-   - Fair use: Limited use for product recognition/research
-   - Commercial use: Requires licensing or permission
-   - Recommendation: Use official product images from manufacturer APIs (Coca-Cola, PepsiCo, etc.)
+- multi-crop request support.
+- `queryQuality` scaffold.
+- Bedrock/Tavily MVP flow.
+- future Cloud Vision provider seam.
 
-3. **Rate Limits**:
-   - Tavily: 1000 credits/month free (1 credit ≈ 1 search)
-   - Google Vision API: Pay-per-request (~$0.10-0.50 per image)
-   - CLIP embedding: Free (local), no rate limits
+Remove / avoid:
 
-4. **Robots.txt Compliance**:
-   - Respect `robots.txt` on source sites
-   - Use `User-Agent` headers
-   - Implement backoff/retry logic
+- `backend/internal/embedding/`.
+- `backend/internal/visualsearch/`.
+- `ENABLE_VISUAL_SEARCH`.
+- `VERTEX_EMBEDDING_*`.
+- `VECTOR_SEARCH_*`.
+- product image vector collection setup.
 
-### Recommended Approach
+## Next implementation step
 
-**For Coca-Cola Demo**:
-1. Use official Coca-Cola product images (brand guidelines, press kit)
-2. Tavily search for product info (text only, no image crawling)
-3. Embed official images locally
-4. Barcode lookup for deterministic matching
+Add a Cloud Vision evidence provider that calls `images:annotate` with:
 
-**For Production**:
-1. Partner with retailers/manufacturers for product catalogs
-2. Use official APIs (Google Product Search, Shopify, etc.)
-3. Implement image licensing checks
-4. Log all image sources for compliance
+- `WEB_DETECTION`
+- `TEXT_DETECTION`
+- `LOGO_DETECTION`
+- `LABEL_DETECTION`
 
-## Next Steps (Phase 3+)
+Then map those signals into an evidence object and feed it into the existing LLM/Tavily pipeline.
 
-- [ ] Implement CLIP embedding pipeline (pixmap or local-image-search)
-- [ ] Integrate Tavily `include_images=true` for source-linked images
-- [ ] Build HNSW index with SQLite metadata
-- [ ] Test Coca-Cola can recognition with barcode + vector search
-- [ ] Measure latency: embedding (10-50ms) + HNSW (7-16ms) + rerank (20-80ms)
-- [ ] Document image source compliance
 
-## References
+## 2026-05-13 Cloud Vision implementation findings
 
-- Pinecone Docs: https://docs.pinecone.io/guides/get-started/overview
-- Tavily Docs: https://docs.tavily.com/documentation/api-reference/endpoint/search
-- pixmap: https://github.com/altamsh04/pixmap
-- local-image-search: https://github.com/Eventual-Inc/local-image-search
-- image-archive-search: https://pypi.org/project/image-archive-search/
-- XICTRON Semantic Product Search 2026: https://www.xictron.com/en/blog/semantic-product-search-vector-search-shops-2026/
-- Google Vision Product Search: https://cloud.google.com/vision/product-search/docs
-- Zebra Product Recognition: https://techdocs.zebra.com/ai-datacapture/2-22/productrecognition/
+Official Go package: `cloud.google.com/go/vision/apiv1`. Use `vision.NewImageAnnotatorClient(ctx)` with ADC / `GOOGLE_APPLICATION_CREDENTIALS`. Batch request feature types: `WEB_DETECTION`, `TEXT_DETECTION`, `LOGO_DETECTION`, `LABEL_DETECTION`. Response fields: `WebDetection`, `TextAnnotations`, `LogoAnnotations`, `LabelAnnotations`.
 
+Chosen implementation: add `backend/internal/vision` provider interface plus `cloudvision` and `mock` providers. Use tightCrop/imageBase64 as primary image for Cloud Vision, pass extracted evidence into LLM recognition prompt, and return it in `recognizedObject.visualEvidence` plus `queryQuality.evidenceTypes`.
+
+
+## 2026-05-16 Multi-image SSE design findings
+
+- Current frontend sends one crop set through `recognizeAndSearch` and waits for final JSON.
+- Current backend validates one `imageBase64` or one `crops` payload, then runs Cloud Vision, Bedrock recognition, Tavily search, and Bedrock summary.
+- Current Cloud Vision provider uses one primary image. Multi-image support should batch/merge evidence and keep per-image traceability.
+- SSE should be implemented as POST + fetch ReadableStream, not browser EventSource, because the request body contains images.
+- New streaming endpoint should preserve existing `POST /api/recognize-search` compatibility.
+
+
+## 2026-05-16 Oracle design review findings
+
+- The design direction is acceptable, but implementation would break unless final SSE payload remains a true `RecognizeSearchResponse` superset.
+- `images[]` must be mutually exclusive with legacy `imageBase64/crops`.
+- `options.maxImages` and `options.stream` must be added to Go/TypeScript types because the current handler rejects unknown fields.
+- SSE payloads need a fixed envelope with top-level `elapsedMs` and monotonic `sequence`.
+- Backend should use `ExecuteWithEvents` plus an `EventSink` so JSON and SSE paths share core logic.
+
+## 2026-05-16 Final design decisions
+
+- Multi-image streaming uses fixed limits: 2 MiB decoded per image, 10 MiB decoded total, 14 MiB HTTP body default, and 120s stream timeout.
+- First implementation keeps Cloud Vision interface compatibility and runs per-image evidence extraction with worker limit 3.
+- LLM uses one integrated multi-image call, with exactly one compact retry using primary image plus fused evidence if provider limits reject the full payload.
+- UI must not show fake numeric accuracy; it shows evidence coverage and signal agreement.
+
+
+## 2026-05-16 Final Oracle blocker fixes
+
+- Usecase flow and event table now share the same fixed event names, including `summary_completed`.
+- Frontend `StreamProgressEvent` includes top-level `elapsedMs` to match the SSE envelope.
+- Cloud Run/proxy streaming is no longer a caveat: local and deployed progressive flush checks are mandatory release gates.
+
+
+## 2026-05-17 Implementation findings
+
+- Existing logging middleware wrapped `http.ResponseWriter` and hid `http.Flusher`; SSE handler returned `streaming_not_supported` until `statusRecorder.Flush()` was added.
+- Local mock providers complete quickly enough to verify progressive stream behavior without external AWS/Tavily/GCP credentials.
+- Initial backend implementation keeps existing provider interfaces stable by normalizing multi-image input to the selected primary image while exposing multi-image metadata and event progress. This keeps local runnable state and leaves deeper provider-level multi-image synthesis as a safe follow-up.
+- `go test/build` updated `backend/go.mod` and `backend/go.sum` by promoting already-used Cloud Vision dependencies to direct requirements and adding a missing checksum.
+
+
+## 2026-05-17 Review blocker fixes
+
+- Goal review failed because secondary images did not affect service/data flow. Fixed by passing all `images[]` into `RecognizeObjectRequest.Images`, updating mock LLM output to reflect image count, and adding multi-image evidence extraction/merge across all images when Vision is enabled.
+- Code quality review failed on concurrent `eventEmitter.sequence` access. Fixed by adding a mutex around sequence assignment and sink emission.
+- Heartbeat lifecycle tightened: stream handler now cancels heartbeat and waits for goroutine exit before returning.
+- Base64 size accounting now uses decoded byte length after successful decode instead of `DecodedLen` maximum.
+- `inputSummary.mode` now returns `multi_image` for non-stream `images[]` and `multi_image_stream` only for stream requests.
+- Added tests proving multi-image mock recognition changes final object and multi-image Vision evidence merges labels from all images.
+
+Re-verification:
+- `cd backend && go test ./...` passed.
+- `cd backend && go test -race ./internal/usecase ./internal/handler` passed.
+- `cd backend && go build ./cmd/server` passed.
+- `cd backend && go vet ./...` passed.
+- `cd frontend && npm run typecheck` passed.
+- `cd frontend && npm run build` passed.
+- Local mock SSE passed with 2 images: status 200, 10 events, first event <1s, >=2 events before final, final object `2枚のサンプル物体`, imageCount=2, responseVersion=2.

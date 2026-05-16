@@ -12,6 +12,11 @@ interface SourceRect {
   sh: number;
 }
 
+export interface MultiCropResult {
+  tightCrop: string;
+  contextCrop: string;
+}
+
 export function calculateObjectCoverSourceRect(
   videoSize: { width: number; height: number },
   renderedRect: DOMRectReadOnly,
@@ -61,6 +66,33 @@ export function cropImage(video: HTMLVideoElement, frameRect: CaptureRect, video
   ctx.drawImage(video, source.sx, source.sy, source.sw, source.sh, 0, 0, canvas.width, canvas.height);
 
   return canvas.toDataURL('image/jpeg', 0.82);
+}
+
+export function cropImageMultiVariant(
+  video: HTMLVideoElement,
+  tightRect: CaptureRect,
+  videoRect: DOMRectReadOnly
+): MultiCropResult {
+  return {
+    tightCrop: cropImage(video, tightRect, videoRect),
+    contextCrop: cropImage(video, expandRect(tightRect, videoRect, 0.18), videoRect),
+  };
+}
+
+function expandRect(rect: CaptureRect, bounds: DOMRectReadOnly, ratio: number): CaptureRect {
+  const growX = rect.width * ratio;
+  const growY = rect.height * ratio;
+  const x = clamp(rect.x - growX, bounds.left, bounds.right);
+  const y = clamp(rect.y - growY, bounds.top, bounds.bottom);
+  const right = clamp(rect.x + rect.width + growX, bounds.left, bounds.right);
+  const bottom = clamp(rect.y + rect.height + growY, bounds.top, bounds.bottom);
+
+  return {
+    x,
+    y,
+    width: Math.max(1, right - x),
+    height: Math.max(1, bottom - y),
+  };
 }
 
 function clamp(value: number, min: number, max: number): number {
