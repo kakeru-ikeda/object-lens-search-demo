@@ -110,11 +110,16 @@ export function CameraView() {
       </div>
 
       {data && (
-        <div className="absolute inset-0 z-50 flex items-end bg-black/60 backdrop-blur-sm transition-opacity">
-          <button className="absolute top-4 right-4 p-2 text-white bg-black/40 rounded-full" onClick={reset} aria-label="閉じる">
+        <div className="absolute inset-0 z-50 flex items-end bg-black/60 backdrop-blur-sm transition-opacity" role="dialog" aria-modal="true" aria-label="検索結果">
+          <button
+            type="button"
+            className="absolute [top:max(1rem,env(safe-area-inset-top))] [right:max(1rem,env(safe-area-inset-right))] z-[60] p-2 text-white bg-black/50 rounded-full shadow-lg backdrop-blur transition-colors hover:bg-black/70"
+            onClick={reset}
+            aria-label="検索結果を閉じる"
+          >
             <X className="w-5 h-5" />
           </button>
-          <ResultPanel data={data} />
+          <ResultPanel data={data} onClose={reset} />
         </div>
       )}
     </div>
