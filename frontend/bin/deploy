@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+FRONTEND_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$FRONTEND_DIR/.." && pwd)"
+ENV_FILE="$FRONTEND_DIR/.env"
+DEPLOY_ENV_FILE="$FRONTEND_DIR/.env.deploy"
+
+if [[ -f "$ENV_FILE" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+fi
+if [[ -f "$DEPLOY_ENV_FILE" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$DEPLOY_ENV_FILE"
+  set +a
+fi
+
+GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-kakeru-ikeda/object-lens-search-demo}"
+REPO_NAME="${GITHUB_REPOSITORY##*/}"
+PAGES_BASE_PATH="${PAGES_BASE_PATH:-/$REPO_NAME/}"
+PAGES_BRANCH="${PAGES_BRANCH:-gh-pages}"
+REQUIRE_CLEAN_TREE="${REQUIRE_CLEAN_TREE:-false}"
+VITE_API_BASE_URL="${VITE_API_BASE_URL:?Set VITE_API_BASE_URL to the deployed Cloud Run service URL before deploying the frontend.}"
+VITE_AUTH_PASSPHRASE_HASH="${VITE_AUTH_PASSPHRASE_HASH:?Set VITE_AUTH_PASSPHRASE_HASH. Generate it with: npm run auth:hash -- \"your passphrase\"}"
+VITE_AUTH_PASSPHRASE_SALT="${VITE_AUTH_PASSPHRASE_SALT:?Set VITE_AUTH_PASSPHRASE_SALT. Generate it with: npm run auth:hash -- \"your passphrase\"}"
+export VITE_API_BASE_URL VITE_AUTH_PASSPHRASE_HASH VITE_AUTH_PASSPHRASE_SALT
+export VITE_AUTH_PASSPHRASE_ITERATIONS="${VITE_AUTH_PASSPHRASE_ITERATIONS:-600000}"
+
+if ! command -v npm >/dev/null 2>&1; then
+  echo "npm is required." >&2
+  exit 1
+fi
+if ! command -v git >/dev/null 2>&1; then
+  echo "git is required." >&2
+  exit 1
+fi
+if ! command -v rsync >/dev/null 2>&1; then
+  echo "rsync is required." >&2
+  exit 1
+fi
+
+cd "$FRONTEND_DIR"
+npm ci
+npm run typecheck
+npm run build -- --base "$PAGES_BASE_PATH"
+
+cd "$REPO_ROOT"
+if [[ "$REQUIRE_CLEAN_TREE" == "true" || "$REQUIRE_CLEAN_TREE" == "1" || "$REQUIRE_CLEAN_TREE" == "yes" || "$REQUIRE_CLEAN_TREE" == "on" ]]; then
+  if ! git diff --quiet || ! git diff --cached --quiet; then
+    echo "Working tree has uncommitted changes. Commit or stash them, or set REQUIRE_CLEAN_TREE=false." >&2
+    exit 1
+  fi
+fi
+
+REMOTE_URL="$(git remote get-url origin)"
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$TMP_DIR"' EXIT
+
+rsync -a --delete "$FRONTEND_DIR/dist/" "$TMP_DIR/"
+touch "$TMP_DIR/.nojekyll"
+
+git -C "$TMP_DIR" init -q
+git -C "$TMP_DIR" config user.name "github-pages-deploy"
+git -C "$TMP_DIR" config user.email "github-pages-deploy@users.noreply.github.com"
+git -C "$TMP_DIR" checkout -q -b "$PAGES_BRANCH"
+git -C "$TMP_DIR" add .
+git -C "$TMP_DIR" commit -q -m "deploy: publish GitHub Pages"
+git -C "$TMP_DIR" remote add origin "$REMOTE_URL"
+if git ls-remote --exit-code --heads origin "$PAGES_BRANCH" >/dev/null 2>&1; then
+  git -C "$TMP_DIR" fetch -q origin "$PAGES_BRANCH:refs/remotes/origin/$PAGES_BRANCH"
+  git -C "$TMP_DIR" push --force-with-lease origin "$PAGES_BRANCH:$PAGES_BRANCH"
+else
+  git -C "$TMP_DIR" push origin "$PAGES_BRANCH:$PAGES_BRANCH"
+fi
+
+cat <<EOF
+Frontend deployed to GitHub Pages branch '$PAGES_BRANCH'.
+Expected URL: https://${GITHUB_REPOSITORY%%/*}.github.io/${REPO_NAME}/
+EOF

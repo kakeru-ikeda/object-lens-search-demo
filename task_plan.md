@@ -121,3 +121,41 @@ Verification:
 - `cd frontend && npm run auth:hash -- "sample-long-passphrase-for-check"` passed.
 - `cd frontend && npm run typecheck` passed.
 - `cd frontend && npm run build` passed.
+
+
+## 2026-05-17 Deployment scripts and instructions
+
+Goal: add deployment commands under each app's `bin/` directory and document environment-variable setup for GitHub Pages frontend and Cloud Run backend.
+
+Known target:
+- Frontend: GitHub Pages for `kakeru-ikeda/object-lens-search-demo`.
+- Backend: Cloud Run in existing Google Cloud project `object-lens-search`.
+
+Phases:
+1. [complete] Inspect current deploy/build/server configuration and required env vars.
+2. [complete] Confirm GitHub Pages and Cloud Run command details from official docs/references.
+3. [complete] Add `frontend/bin/deploy` and `backend/bin/deploy`.
+4. [complete] Document env setup and deployment order in README.
+5. [complete] Verify shell syntax, frontend build/typecheck, backend test/build/vet, and docs consistency.
+
+Decisions:
+- Frontend deploy should build Vite with explicit GitHub Pages base path and publish only `frontend/dist` to `gh-pages`.
+- Backend deploy should build from `backend/Dockerfile`, deploy to Cloud Run, and require production env/secret setup instead of reading local secret values into git.
+- `ALLOWED_ORIGINS` for Cloud Run must include the final GitHub Pages origin.
+
+Verification:
+- `bash -n frontend/bin/deploy backend/bin/deploy` passed.
+- deploy scripts are executable.
+- `cd frontend && npm ci && npm run typecheck && npm run build` passed.
+- `cd backend && go test ./... && go build ./cmd/server && go vet ./...` passed.
+- Backend deploy missing-env guard stopped before deploy as expected.
+- Frontend deploy missing-env/dirty-tree guard stopped before deploy as expected.
+
+Known tool constraints:
+- Frontend LSP reported missing React types before `npm ci`; package verification passed after install.
+- Go LSP diagnostics unavailable because `gopls` is not installed; `go test/build/vet` passed as fallback.
+- Final re-check passed: `bash -n` for both deploy scripts, executable bits, frontend `npm ci && npm run typecheck && npm run build`, frontend LSP diagnostics, and backend `go test ./... && go build ./cmd/server && go vet ./...`.
+- Cloud Run Secret Manager IAM failure fixed by granting `roles/secretmanager.secretAccessor` to the default runtime service account and automating future grants in `backend/bin/deploy`.
+- Backend Cloud Run deployment verified at `<cloud-run-service-url>/api/healthz`.
+- Frontend GitHub Pages deployment verified at `https://kakeru-ikeda.github.io/object-lens-search-demo/`.
+- Frontend deploy dirty-tree guard changed to opt-in (`REQUIRE_CLEAN_TREE=true`) because only `frontend/dist` is pushed to `gh-pages` via a temporary git repository.
