@@ -11,7 +11,9 @@ backend/server
 .env.local
 .env.*.local
 frontend/.env
+frontend/.env.deploy
 backend/.env
+backend/.env.deploy
 backend/service-account*.json
 backend/*service-account*.json
 
