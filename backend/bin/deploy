@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BACKEND_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENV_FILE="$BACKEND_DIR/.env.deploy"
+
+if [[ -f "$ENV_FILE" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+fi
+
+PROJECT_ID="${PROJECT_ID:-object-lens-search}"
+REGION="${REGION:-asia-northeast1}"
+SERVICE_NAME="${SERVICE_NAME:-object-lens-search-api}"
+IMAGE_NAME="${IMAGE_NAME:-$SERVICE_NAME}"
+REPOSITORY="${ARTIFACT_REPOSITORY:-cloud-run-source-deploy}"
+IMAGE_URI="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/${IMAGE_NAME}:$(date +%Y%m%d%H%M%S)"
+
+APP_ENV="${APP_ENV:-production}"
+ALLOWED_ORIGINS="${ALLOWED_ORIGINS:?Set ALLOWED_ORIGINS to your GitHub Pages origin, for example https://kakeru-ikeda.github.io.}"
+AWS_REGION="${AWS_REGION:?Set AWS_REGION for Amazon Bedrock.}"
+BEDROCK_MODEL_ID="${BEDROCK_MODEL_ID:?Set BEDROCK_MODEL_ID for Amazon Bedrock.}"
+TAVILY_ENDPOINT="${TAVILY_ENDPOINT:-https://api.tavily.com/search}"
+CLOUD_VISION_ENABLED="${CLOUD_VISION_ENABLED:-false}"
+GCP_PROJECT_ID="${GCP_PROJECT_ID:-$PROJECT_ID}"
+GCP_REGION="${GCP_REGION:-$REGION}"
+SERVICE_ACCOUNT="${SERVICE_ACCOUNT:-}"
+GRANT_SECRET_ACCESS="${GRANT_SECRET_ACCESS:-true}"
+
+TAVILY_SECRET_NAME="${TAVILY_SECRET_NAME:-tavily-api-key}"
+AWS_ACCESS_KEY_ID_SECRET_NAME="${AWS_ACCESS_KEY_ID_SECRET_NAME:-aws-access-key-id}"
+AWS_SECRET_ACCESS_KEY_SECRET_NAME="${AWS_SECRET_ACCESS_KEY_SECRET_NAME:-aws-secret-access-key}"
+AWS_SESSION_TOKEN_SECRET_NAME="${AWS_SESSION_TOKEN_SECRET_NAME:-}"
+
+if ! command -v gcloud >/dev/null 2>&1; then
+  echo "gcloud CLI is required." >&2
+  exit 1
+fi
+if ! command -v go >/dev/null 2>&1; then
+  echo "go is required for pre-deploy verification." >&2
+  exit 1
+fi
+
+cd "$BACKEND_DIR"
+go test ./...
+go build ./cmd/server
+go vet ./...
+
+gcloud config set project "$PROJECT_ID"
+PROJECT_NUMBER="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')"
+RUNTIME_SERVICE_ACCOUNT="$SERVICE_ACCOUNT"
+if [[ -z "$RUNTIME_SERVICE_ACCOUNT" ]]; then
+  RUNTIME_SERVICE_ACCOUNT="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+fi
+
+SERVICES=(run.googleapis.com artifactregistry.googleapis.com cloudbuild.googleapis.com secretmanager.googleapis.com)
+if [[ "$CLOUD_VISION_ENABLED" == "true" || "$CLOUD_VISION_ENABLED" == "1" || "$CLOUD_VISION_ENABLED" == "yes" || "$CLOUD_VISION_ENABLED" == "on" ]]; then
+  SERVICES+=(vision.googleapis.com)
+fi
+gcloud services enable "${SERVICES[@]}"
+
+if ! gcloud artifacts repositories describe "$REPOSITORY" --location "$REGION" >/dev/null 2>&1; then
+  gcloud artifacts repositories create "$REPOSITORY" \
+    --repository-format=docker \
+    --location="$REGION" \
+    --description="Cloud Run container images"
+fi
+
+gcloud builds submit "$BACKEND_DIR" --tag "$IMAGE_URI"
+
+SECRETS=(
+  "TAVILY_API_KEY=${TAVILY_SECRET_NAME}:latest"
+  "AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID_SECRET_NAME}:latest"
+  "AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY_SECRET_NAME}:latest"
+)
+if [[ -n "$AWS_SESSION_TOKEN_SECRET_NAME" ]]; then
+  SECRETS+=("AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN_SECRET_NAME}:latest")
+fi
+
+SECRET_NAMES=("$TAVILY_SECRET_NAME" "$AWS_ACCESS_KEY_ID_SECRET_NAME" "$AWS_SECRET_ACCESS_KEY_SECRET_NAME")
+if [[ -n "$AWS_SESSION_TOKEN_SECRET_NAME" ]]; then
+  SECRET_NAMES+=("$AWS_SESSION_TOKEN_SECRET_NAME")
+fi
+
+if [[ "$GRANT_SECRET_ACCESS" == "true" || "$GRANT_SECRET_ACCESS" == "1" || "$GRANT_SECRET_ACCESS" == "yes" || "$GRANT_SECRET_ACCESS" == "on" ]]; then
+  echo "Granting Secret Manager access to ${RUNTIME_SERVICE_ACCOUNT}..."
+  for secret_name in "${SECRET_NAMES[@]}"; do
+    if [[ -n "$secret_name" ]]; then
+      gcloud secrets add-iam-policy-binding "$secret_name" \
+        --project "$PROJECT_ID" \
+        --member "serviceAccount:${RUNTIME_SERVICE_ACCOUNT}" \
+        --role "roles/secretmanager.secretAccessor" \
+        --quiet >/dev/null
+    fi
+  done
+fi
+
+ENV_VARS="^@^APP_ENV=${APP_ENV}@ALLOWED_ORIGINS=${ALLOWED_ORIGINS}@AWS_REGION=${AWS_REGION}@BEDROCK_MODEL_ID=${BEDROCK_MODEL_ID}@LLM_PROVIDER=bedrock@SEARCH_PROVIDER=tavily@TAVILY_ENDPOINT=${TAVILY_ENDPOINT}@CLOUD_VISION_ENABLED=${CLOUD_VISION_ENABLED}@CLOUD_VISION_PROVIDER=cloudvision@GCP_PROJECT_ID=${GCP_PROJECT_ID}@GCP_REGION=${GCP_REGION}@RATE_LIMIT_PER_MINUTE=${RATE_LIMIT_PER_MINUTE:-30}@MAX_IMAGE_BYTES=${MAX_IMAGE_BYTES:-2097152}@MAX_TOTAL_IMAGE_BYTES=${MAX_TOTAL_IMAGE_BYTES:-10485760}@MAX_REQUEST_BYTES=${MAX_REQUEST_BYTES:-14680064}@REQUEST_TIMEOUT_SECONDS=${REQUEST_TIMEOUT_SECONDS:-30}@STREAM_REQUEST_TIMEOUT_SECONDS=${STREAM_REQUEST_TIMEOUT_SECONDS:-120}"
+
+SERVICE_ACCOUNT_ARGS=()
+if [[ -n "$SERVICE_ACCOUNT" ]]; then
+  SERVICE_ACCOUNT_ARGS=(--service-account "$SERVICE_ACCOUNT")
+fi
+
+gcloud run deploy "$SERVICE_NAME" \
+  --image "$IMAGE_URI" \
+  --region "$REGION" \
+  --platform managed \
+  --allow-unauthenticated \
+  --port 8080 \
+  --memory "${MEMORY:-1Gi}" \
+  --cpu "${CPU:-1}" \
+  --timeout "${TIMEOUT:-300}" \
+  "${SERVICE_ACCOUNT_ARGS[@]}" \
+  --set-env-vars "$ENV_VARS" \
+  --update-secrets "$(IFS=,; echo "${SECRETS[*]}")"
+
+SERVICE_URL="$(gcloud run services describe "$SERVICE_NAME" --region "$REGION" --format='value(status.url)')"
+echo "Backend deployed: ${SERVICE_URL}"
+echo "Use this for frontend deploy: VITE_API_BASE_URL=${SERVICE_URL}"

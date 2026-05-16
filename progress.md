@@ -237,3 +237,41 @@ Re-verification:
 - Error: first helper-file generation attempt via `ctx_execute` failed because sandbox cwd was `/tmp/...`; switched to absolute repo patch.
 - Error: frontend typecheck failed on `Uint8Array<ArrayBufferLike>` salt not assignable to `BufferSource`; fixed by returning `ArrayBuffer` from salt conversion.
 - Verification passed: frontend auth hash helper, LSP diagnostics for modified TS/TSX/env files, `npm run typecheck`, and `npm run build`.
+
+
+## 2026-05-17 Deployment scripts
+
+- User requested deployment implementation after PR merge/main pull.
+- Loaded planning skill, launched parallel explore/librarian tasks for repo deploy files, backend env needs, Cloud Run docs, and GitHub Pages docs.
+- Confirmed current branch is clean `main...origin/main`.
+- Confirmed backend already uses `PORT`, has `backend/Dockerfile`, and production env validation blocks mock LLM/search providers.
+- Confirmed frontend needs GitHub Pages base path and build-time Vite env values for API URL and passphrase gate.
+- Added `backend/bin/deploy` for Cloud Run: preflight Go checks, API enablement, Artifact Registry repo creation, Cloud Build image build, Cloud Run deploy, Secret Manager injection, and service URL output.
+- Added `frontend/bin/deploy` for GitHub Pages: npm ci/typecheck/build with Vite base path, temp publish repo, `.nojekyll`, and `gh-pages` push.
+- Added ignored deploy env templates: `backend/.env.deploy.example` and `frontend/.env.deploy.example`; `.env.deploy` files ignored in `.gitignore`.
+- Updated README with Secret Manager setup, backend deploy, frontend deploy, CORS, passphrase hash, and post-deploy checks.
+- Verification passed: script syntax/executable checks, frontend `npm ci && npm run typecheck && npm run build`, backend `go test ./... && go build ./cmd/server && go vet ./...`.
+- Expected guard checks passed: backend deploy stops without `ALLOWED_ORIGINS`; frontend deploy stops before deploy when working tree is dirty / required deploy state is absent.
+- Final continuation verification re-ran successfully: deploy script syntax/executable checks, frontend install/typecheck/build, frontend LSP diagnostics, backend test/build/vet. Go LSP remains unavailable because `gopls` is not installed.
+
+
+## 2026-05-17 Cloud Run Secret Manager IAM fix
+
+- Backend deploy failed after successful Cloud Build because Cloud Run revision service account `1054055053285-compute@developer.gserviceaccount.com` lacked `roles/secretmanager.secretAccessor` on `tavily-api-key`, `aws-access-key-id`, and `aws-secret-access-key`.
+- Verified all three secret IAM policies were empty for accessor bindings.
+- Granted `roles/secretmanager.secretAccessor` on the three secrets to the failing runtime service account.
+- Updated `backend/bin/deploy` to resolve the default runtime service account from project number and pre-grant secret access to configured secrets before `gcloud run deploy`.
+- Updated README and `backend/.env.deploy.example` to document automatic grants and manual recovery commands.
+- Re-ran backend deploy successfully. Cloud Run revision `object-lens-search-api-00002-7lp` serves 100% traffic.
+- Confirmed `/api/recognize-search` reaches the app and returns app JSON 405 for GET. `/healthz` exact path returned Google Frontend 404, so added `/api/healthz` as a Cloud Run-friendly health alias.
+- Deployed again with `/api/healthz`; Cloud Run revision `object-lens-search-api-00003-lxp` serves 100% traffic.
+- Verified backend service URL `<cloud-run-service-url>`, `/api/healthz` returns `200 {"status":"ok"}`, and GET `/api/recognize-search` returns app JSON 405.
+
+
+## 2026-05-17 GitHub Pages deploy guard fix
+
+- Frontend deploy built successfully but stopped because source working tree had uncommitted deployment-script/docs changes.
+- Confirmed `frontend/dist/` and `frontend/.env.deploy` are ignored, and the script publishes only built `dist` files from a temporary git repository.
+- Changed `frontend/bin/deploy` so clean-tree enforcement is opt-in via `REQUIRE_CLEAN_TREE=true`; default allows deploy from a dirty source tree.
+- Re-ran `frontend/bin/deploy` successfully. It built with base `/object-lens-search-demo/` and pushed a new `gh-pages` branch.
+- Verified GitHub Pages URL `https://kakeru-ikeda.github.io/object-lens-search-demo/` returns HTTP 200 after propagation.

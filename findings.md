@@ -177,3 +177,14 @@ Re-verification:
 - Static GitHub Pages cannot hide bundled code, hashes, JS, CSS, or public assets. The passphrase gate is only a lightweight friction layer.
 - Chosen verification uses Web Crypto PBKDF2-SHA256 with a public salt/hash and 600,000 default iterations. The raw passphrase is never committed.
 - Auth state uses `sessionStorage`, not `localStorage`, so the unlock disappears when the tab closes.
+
+
+## 2026-05-17 Deployment findings
+
+- Backend server already listens on `PORT` from config, matching Cloud Run container requirements.
+- Backend Dockerfile builds a static Go binary and exposes `8080`; suitable for Cloud Run container deploy.
+- Production config requires `APP_ENV=production`, real Bedrock settings, and `TAVILY_API_KEY`; mock LLM/search providers are rejected in production.
+- Cloud Vision is optional via `CLOUD_VISION_ENABLED`; when enabled, production cannot use `CLOUD_VISION_PROVIDER=mock`.
+- CORS is controlled by `ALLOWED_ORIGINS`; GitHub Pages origin must be explicitly configured for frontend browser requests.
+- Frontend Vite build can receive public build-time values via `VITE_API_BASE_URL`, `VITE_AUTH_PASSPHRASE_HASH`, `VITE_AUTH_PASSPHRASE_SALT`, and `VITE_AUTH_PASSPHRASE_ITERATIONS`.
+- GitHub Pages project sites need a Vite base path such as `/object-lens-search-demo/` unless deployed at a custom domain or user site root.

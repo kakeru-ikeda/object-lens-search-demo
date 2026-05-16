@@ -57,6 +57,7 @@ func main() {
 	uc := &usecase.RecognizeSearchUsecase{LLM: vision, Searcher: webSearcher, Vision: visionEvidence, LLMProvider: llmProvider, SearchProvider: searchProvider, CloudVisionProvider: cloudVisionProvider, Logger: logger}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", handler.Health)
+	mux.HandleFunc("/api/healthz", handler.Health)
 	mux.Handle("/api/recognize-search", &handler.RecognizeSearchHandler{Usecase: uc, MaxRequestBytes: cfg.MaxRequestBytes, MaxImageBytes: cfg.MaxImageBytes, MaxTotalImageBytes: cfg.MaxTotalImageBytes, RequestTimeout: cfg.RequestTimeout})
 	mux.Handle("/api/recognize-search-stream", &handler.RecognizeSearchStreamHandler{Usecase: uc, MaxRequestBytes: cfg.MaxRequestBytes, MaxImageBytes: cfg.MaxImageBytes, MaxTotalImageBytes: cfg.MaxTotalImageBytes, StreamRequestTimeout: cfg.StreamRequestTimeout})
 

@@ -94,6 +94,136 @@ go test ./...
 
 Without production credentials, local development can use mock fallback outside `APP_ENV=production`. Production must set Bedrock and Tavily environment variables.
 
+## Deployment
+
+Deploy the backend first, then use the printed Cloud Run URL for the frontend build.
+
+### 1. Cloud Run backend
+
+Prerequisites:
+
+- `gcloud` is installed and logged in.
+- Google Cloud project `object-lens-search` exists.
+- Billing is enabled for the project.
+- AWS Bedrock credentials and Tavily API key are available outside git.
+
+Create Secret Manager entries for the sensitive values. Do not commit these values to `.env` files:
+
+```bash
+gcloud config set project object-lens-search
+gcloud services enable secretmanager.googleapis.com
+
+printf '%s' 'YOUR_TAVILY_API_KEY' | gcloud secrets create tavily-api-key --data-file=-
+printf '%s' 'YOUR_AWS_ACCESS_KEY_ID' | gcloud secrets create aws-access-key-id --data-file=-
+printf '%s' 'YOUR_AWS_SECRET_ACCESS_KEY' | gcloud secrets create aws-secret-access-key --data-file=-
+```
+
+The deploy script grants `roles/secretmanager.secretAccessor` to the Cloud Run runtime service account for the configured secrets. If you deploy with a custom Cloud Run service account, set `SERVICE_ACCOUNT` in `backend/.env.deploy`; otherwise the script uses the default Compute Engine service account shown in Cloud Run errors as `PROJECT_NUMBER-compute@developer.gserviceaccount.com`.
+
+If you need to grant access manually after a failed deploy, run:
+
+```bash
+RUNTIME_SERVICE_ACCOUNT='1054055053285-compute@developer.gserviceaccount.com'
+gcloud secrets add-iam-policy-binding tavily-api-key \
+  --member="serviceAccount:${RUNTIME_SERVICE_ACCOUNT}" \
+  --role='roles/secretmanager.secretAccessor'
+gcloud secrets add-iam-policy-binding aws-access-key-id \
+  --member="serviceAccount:${RUNTIME_SERVICE_ACCOUNT}" \
+  --role='roles/secretmanager.secretAccessor'
+gcloud secrets add-iam-policy-binding aws-secret-access-key \
+  --member="serviceAccount:${RUNTIME_SERVICE_ACCOUNT}" \
+  --role='roles/secretmanager.secretAccessor'
+```
+
+Prepare deploy config:
+
+```bash
+cp backend/.env.deploy.example backend/.env.deploy
+```
+
+Edit `backend/.env.deploy`:
+
+```bash
+PROJECT_ID=object-lens-search
+REGION=asia-northeast1
+SERVICE_NAME=object-lens-search-api
+ALLOWED_ORIGINS=https://kakeru-ikeda.github.io
+APP_ENV=production
+AWS_REGION=us-east-1
+BEDROCK_MODEL_ID=anthropic.claude-3-5-sonnet-20241022-v1:0
+CLOUD_VISION_ENABLED=false
+# Optional custom runtime identity:
+# SERVICE_ACCOUNT=object-lens-runner@object-lens-search.iam.gserviceaccount.com
+GRANT_SECRET_ACCESS=true
+```
+
+Deploy:
+
+```bash
+cd backend
+./bin/deploy
+```
+
+The script runs Go tests/build/vet, enables required Google Cloud APIs, creates an Artifact Registry repository if missing, builds the Docker image with Cloud Build, deploys Cloud Run, and prints the service URL.
+
+Useful checks after deployment:
+
+```bash
+curl "$(gcloud run services describe object-lens-search-api --region asia-northeast1 --format='value(status.url)')/healthz"
+curl "$(gcloud run services describe object-lens-search-api --region asia-northeast1 --format='value(status.url)')/api/healthz"
+gcloud run services logs read object-lens-search-api --region asia-northeast1 --limit 50
+```
+
+If `CLOUD_VISION_ENABLED=true`, grant the Cloud Run runtime service account permission to call Cloud Vision. Do not set `GOOGLE_APPLICATION_CREDENTIALS` on Cloud Run; use the service account attached to the service.
+
+### 2. GitHub Pages frontend
+
+Generate the static passphrase hash:
+
+```bash
+cd frontend
+npm run auth:hash -- "choose-a-long-shared-passphrase"
+```
+
+Prepare deploy config:
+
+```bash
+cp frontend/.env.deploy.example frontend/.env.deploy
+```
+
+Edit `frontend/.env.deploy` with the Cloud Run URL printed by backend deploy and the generated auth values:
+
+```bash
+GITHUB_REPOSITORY=kakeru-ikeda/object-lens-search-demo
+PAGES_BASE_PATH=/object-lens-search-demo/
+REQUIRE_CLEAN_TREE=false
+VITE_API_BASE_URL=https://YOUR-CLOUD-RUN-SERVICE.a.run.app
+VITE_AUTH_PASSPHRASE_HASH=...
+VITE_AUTH_PASSPHRASE_SALT=...
+VITE_AUTH_PASSPHRASE_ITERATIONS=600000
+```
+
+Deploy:
+
+```bash
+cd frontend
+./bin/deploy
+```
+
+The script runs `npm ci`, `npm run typecheck`, builds Vite with the GitHub Pages base path, then publishes `frontend/dist` to the `gh-pages` branch through a temporary git repository. It does not require a clean source working tree by default because only the generated `dist` files are pushed to `gh-pages`; set `REQUIRE_CLEAN_TREE=true` if you want that stricter local policy. In GitHub repository settings, configure Pages to publish from the `gh-pages` branch.
+
+For project pages, the site URL is:
+
+```text
+https://kakeru-ikeda.github.io/object-lens-search-demo/
+```
+
+### Deployment environment files
+
+- `backend/.env.deploy` and `frontend/.env.deploy` are ignored by git.
+- `backend/.env.deploy.example` and `frontend/.env.deploy.example` are safe templates and should be committed.
+- Vite `VITE_*` values are public in the built frontend bundle; never put API secrets there.
+
 ## Verification
 
 ```bash
