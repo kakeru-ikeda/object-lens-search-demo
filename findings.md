@@ -168,3 +168,12 @@ Re-verification:
 - `cd frontend && npm run typecheck` passed.
 - `cd frontend && npm run build` passed.
 - Local mock SSE passed with 2 images: status 200, 10 events, first event <1s, >=2 events before final, final object `2枚のサンプル物体`, imageCount=2, responseVersion=2.
+
+
+## 2026-05-17 Static passphrase gate findings
+
+- Frontend entry is `frontend/src/App.tsx`, which renders `CameraView`; wrapping this point gates camera/search features before hooks request camera access.
+- Existing config uses Vite `import.meta.env.VITE_*`; new auth values follow that pattern.
+- Static GitHub Pages cannot hide bundled code, hashes, JS, CSS, or public assets. The passphrase gate is only a lightweight friction layer.
+- Chosen verification uses Web Crypto PBKDF2-SHA256 with a public salt/hash and 600,000 default iterations. The raw passphrase is never committed.
+- Auth state uses `sessionStorage`, not `localStorage`, so the unlock disappears when the tab closes.

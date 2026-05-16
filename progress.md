@@ -225,3 +225,15 @@ Re-verification:
 - `cd frontend && npm run typecheck` passed.
 - `cd frontend && npm run build` passed.
 - Local mock SSE passed with 2 images: status 200, 10 events, first event <1s, >=2 events before final, final object `2枚のサンプル物体`, imageCount=2, responseVersion=2.
+
+
+## 2026-05-17 Static passphrase gate
+
+- User requested simple auth for a GitHub Pages frontend using a pre-decided passphrase.
+- Loaded caveman, frontend UI, and planning skills; launched explore/librarian background checks.
+- Confirmed React + Vite frontend entry: `frontend/src/App.tsx` wraps `CameraView`.
+- Implemented `PassphraseGate`, `usePassphraseAuth`, and Vite auth config using PBKDF2-SHA256 via Web Crypto.
+- Added `frontend/.env.example`, `frontend/scripts/hash-passphrase.mjs`, `npm run auth:hash`, and README setup/security caveats.
+- Error: first helper-file generation attempt via `ctx_execute` failed because sandbox cwd was `/tmp/...`; switched to absolute repo patch.
+- Error: frontend typecheck failed on `Uint8Array<ArrayBufferLike>` salt not assignable to `BufferSource`; fixed by returning `ArrayBuffer` from salt conversion.
+- Verification passed: frontend auth hash helper, LSP diagnostics for modified TS/TSX/env files, `npm run typecheck`, and `npm run build`.

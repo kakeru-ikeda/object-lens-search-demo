@@ -19,6 +19,25 @@ npm run typecheck
 
 Set `VITE_API_BASE_URL` when the backend is not running at `http://localhost:8080`.
 
+### Frontend passphrase gate for GitHub Pages
+
+The frontend has a static-site passphrase gate before the camera/search UI. Generate a PBKDF2-SHA256 hash from the shared passphrase and set the values during the GitHub Pages build:
+
+```bash
+cd frontend
+npm run auth:hash -- "choose-a-long-shared-passphrase"
+```
+
+Copy the output into `frontend/.env` for local testing, or into GitHub Actions / Pages build variables:
+
+```bash
+VITE_AUTH_PASSPHRASE_HASH=...
+VITE_AUTH_PASSPHRASE_SALT=...
+VITE_AUTH_PASSPHRASE_ITERATIONS=600000
+```
+
+Authenticated state is stored in `sessionStorage`, so a browser tab stays unlocked across reloads and locks again after the tab is closed. This is only a lightweight access gate for static hosting: all JavaScript, hashes, and public assets shipped by GitHub Pages remain inspectable in the browser. Do not use this to protect personal data, API secrets, paid content, or confidential documents; use server-side authentication for real security.
+
 ## Smartphone as PC webcam testing
 
 Use this when you want the phone camera to appear as a PC webcam in the desktop browser.
