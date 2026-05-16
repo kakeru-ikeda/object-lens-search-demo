@@ -3,7 +3,21 @@
 @tailwind utilities;
 
 @layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
   body {
     @apply antialiased text-neutral-900 bg-neutral-50;
+  }
+}
+
+@layer utilities {
+  .app-viewport {
+    height: 100vh;
+    height: 100svh;
+    height: 100dvh;
   }
 }

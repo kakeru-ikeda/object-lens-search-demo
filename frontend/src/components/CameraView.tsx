@@ -56,7 +56,7 @@ export function CameraView() {
 
   if (cameraError) {
     return (
-      <div className="flex items-center justify-center h-screen bg-black text-white p-6">
+      <div className="flex items-center justify-center app-viewport bg-black text-white p-6">
         <div className="max-w-sm space-y-3 text-center">
           <p className="text-lg font-semibold">カメラを起動できません</p>
           <p className="text-sm text-white/80">{cameraError.message}</p>
@@ -69,7 +69,7 @@ export function CameraView() {
   }
 
   return (
-    <div className="relative flex flex-col h-screen bg-black overflow-hidden">
+    <div className="relative flex flex-col app-viewport bg-black overflow-hidden">
       <div className="relative flex-1">
         <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover" />
         {stream && <CaptureOverlay onCaptureRectChange={setCaptureRect} />}
