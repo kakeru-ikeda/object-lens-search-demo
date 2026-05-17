@@ -222,7 +222,24 @@ func compactSearchResults(results []model.NormalizedSearchResult) []compactSearc
 }
 
 func recognitionPrompt(language string, evidence *model.VisualEvidence) string {
-	base := "Identify the main object in this image. Return only valid JSON with objectName, description, searchQuery, confidence (low|medium|high), needsMoreContext. Use language " + language + ". Do not include markdown."
+	base := `You are a product identification expert. Your goal is to determine the EXACT commercial product shown so a user can find it on an e-commerce or manufacturer website.
+
+Return ONLY valid JSON (no markdown, no explanation) with these fields:
+- objectName: exact product name including brand and model (e.g. "Nike Air Max 270 React")
+- description: one-sentence description in language ` + language + `
+- searchQuery: the single best query to find the official product listing page. Follow this priority:
+    1. "<Brand> <ModelName> <ModelNumber/SKU>" — use if identifiable
+    2. "<Brand> <ProductCategory> <KeyDistinguishingFeature>"
+    3. Descriptive fallback (last resort only)
+  IMPORTANT: Do NOT describe visual appearance (color, shape). Generate the query a buyer would type to find THIS specific product.
+- searchQueries: array of up to 3 additional query objects, each with "query" (string) and "intent" (string). Use these intents:
+    - "product_page": query targeting the official product or purchase page
+    - "model_lookup": query to identify the exact model/variant/SKU
+    - "price_comparison": query to compare prices across sellers
+- confidence: "low"|"medium"|"high"
+- needsMoreContext: true only if brand and model cannot be determined at all
+
+Use language ` + language + ` for objectName and description.`
 	if evidence == nil || evidence.Empty() {
 		return base
 	}
@@ -230,7 +247,10 @@ func recognitionPrompt(language string, evidence *model.VisualEvidence) string {
 	if err != nil {
 		return base
 	}
-	return base + " Use these Google Cloud Vision evidence signals as corroborating evidence, not as absolute truth. Prefer OCR/logo/web entities when they agree. Evidence JSON: " + string(compact)
+	return base + `
+
+Google Cloud Vision evidence below — treat OCR, logo, and webEntities as strong signals; labels as weak signals. Use them to sharpen the product identification, not to override your visual analysis.
+Evidence JSON: ` + string(compact)
 }
 
 func summarizePrompt(language string, object model.RecognizedObject, results string) string {
@@ -245,7 +265,16 @@ func summarizePrompt(language string, object model.RecognizedObject, results str
 }
 
 func hypothesisPrompt(language string, evidence *model.VisualEvidence) string {
-	base := "Quickly identify likely main object in image. Return only valid JSON with objectName, description, searchQuery, confidence (low|medium|high), needsMoreContext. Prefer concise searchQuery suitable for web search. Use language " + language + ". Do not include markdown."
+	base := `You are a product identification expert. Quickly identify the most likely commercial product shown.
+
+Return ONLY valid JSON (no markdown) with these fields:
+- objectName: brand + model name if possible (e.g. "Nike Air Max 270")
+- description: one-line description in language ` + language + `
+- searchQuery: a web search query that would find the official product page — prioritize brand + model number over visual descriptions like color or shape
+- confidence: "low"|"medium"|"high"
+- needsMoreContext: true if product cannot be identified
+
+Use language ` + language + `.`
 	if evidence == nil || evidence.Empty() {
 		return base
 	}
@@ -253,5 +282,8 @@ func hypothesisPrompt(language string, evidence *model.VisualEvidence) string {
 	if err != nil {
 		return base
 	}
-	return base + " Consider these Cloud Vision signals as weak evidence. Evidence JSON: " + string(compact)
+	return base + `
+
+Cloud Vision signals (treat as supporting evidence — OCR/logo/webEntities are strongest):
+` + string(compact)
 }

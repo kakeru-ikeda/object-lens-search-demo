@@ -183,6 +183,14 @@ func (u *RecognizeSearchUsecase) execute(ctx context.Context, req ExecuteRequest
 			if err := emitter.emit(ctx, "recognition_completed", "completed", "", "Recognition completed", map[string]interface{}{"objectName": recognized.Object.ObjectName, "searchQuery": recognized.Object.SearchQuery, "elapsedMs": res.elapsedMs}); err != nil {
 				return nil, err
 			}
+			// Start speculative searches for each multi-intent query candidate from the LLM.
+			for _, candidate := range recognized.Object.SearchQueries {
+				if candidate.Query == "" || candidate.Query == recognized.Object.SearchQuery {
+					continue
+				}
+				_ = emitter.emitFrom(workCtx, "bedrock", "query_generated", "completed", "", "Multi-intent query generated", map[string]interface{}{"source": "recognition_" + candidate.Intent, "query": candidate.Query, "intent": candidate.Intent})
+				speculative.Start(ctx, "recognition_"+candidate.Intent, candidate.Query)
+			}
 		case <-ctx.Done():
 			cancel()
 			return nil, ctx.Err()
@@ -393,7 +401,7 @@ type recognitionResult struct {
 	elapsedMs int64
 }
 
-const maxSpeculativeQuerySources = 3
+const maxSpeculativeQuerySources = 5
 
 type speculativeSearches struct {
 	searcher   search.WebSearcher
@@ -537,21 +545,29 @@ func evidenceQuerySources(evidence *model.VisualEvidence) []querySource {
 	if evidence == nil || evidence.Empty() {
 		return nil
 	}
-	queries := make([]querySource, 0, 2)
-	for _, logo := range evidence.Logos {
-		queries = appendUniqueQuery(queries, "vision_labels_query", logo.Text, confidenceFromScore(logo.Score))
-	}
+	queries := make([]querySource, 0, 4)
+	// 1. BestGuessLabels — Google's direct product hypothesis, highest value
 	for _, label := range evidence.BestGuessLabels {
-		queries = appendUniqueQuery(queries, "vision_labels_query", label, "medium")
+		queries = appendUniqueQuery(queries, "vision_best_guess", label, "high")
 	}
+	// 2. WebEntities — often contain specific product/brand names
 	for _, entity := range evidence.WebEntities {
-		queries = appendUniqueQuery(queries, "vision_labels_query", entity.Text, confidenceFromScore(entity.Score))
+		if entity.Score >= 0.5 {
+			queries = appendUniqueQuery(queries, "vision_web_entity", entity.Text, confidenceFromScore(entity.Score))
+		}
 	}
+	// 3. Logos — brand names
+	for _, logo := range evidence.Logos {
+		queries = appendUniqueQuery(queries, "vision_logo", logo.Text, confidenceFromScore(logo.Score))
+	}
+	// 4. OCR — only if it looks like a model number (alphanumeric, short)
 	for _, ocr := range evidence.OCR {
-		queries = appendUniqueQuery(queries, "vision_ocr_query", ocr.Text, confidenceFromScore(ocr.Score))
+		if isLikelyModelNumber(ocr.Text) {
+			queries = appendUniqueQuery(queries, "vision_ocr_model", ocr.Text, confidenceFromScore(ocr.Score))
+		}
 	}
-	if len(queries) > 2 {
-		return queries[:2]
+	if len(queries) > 3 {
+		return queries[:3]
 	}
 	return queries
 }
@@ -620,23 +636,53 @@ func enrichSearchQuery(query string, evidence *model.VisualEvidence) string {
 	if evidence == nil || evidence.Empty() {
 		return query
 	}
-	terms := make([]string, 0, 6)
+	queryLower := strings.ToLower(query)
+	terms := make([]string, 0, 4)
+	// Logos: brand names are high-signal — add only if not already in the query
 	for _, logo := range evidence.Logos {
-		terms = appendEvidenceTerm(terms, logo.Text)
+		term := strings.TrimSpace(logo.Text)
+		if term != "" && !strings.Contains(queryLower, strings.ToLower(term)) {
+			terms = appendEvidenceTerm(terms, term)
+		}
 	}
-	for _, text := range evidence.OCR {
-		terms = appendEvidenceTerm(terms, text.Text)
-	}
-	for _, label := range evidence.BestGuessLabels {
-		terms = appendEvidenceTerm(terms, label)
-	}
+	// WebEntities: product/brand identifiers — add high-confidence ones not already in query
 	for _, entity := range evidence.WebEntities {
-		terms = appendEvidenceTerm(terms, entity.Text)
+		term := strings.TrimSpace(entity.Text)
+		if term != "" && entity.Score >= 0.5 && !strings.Contains(queryLower, strings.ToLower(term)) {
+			terms = appendEvidenceTerm(terms, term)
+		}
 	}
+	// BestGuessLabels: Google's product hypothesis — add if not already in query
+	for _, label := range evidence.BestGuessLabels {
+		term := strings.TrimSpace(label)
+		if term != "" && !strings.Contains(queryLower, strings.ToLower(term)) {
+			terms = appendEvidenceTerm(terms, term)
+		}
+	}
+	// Skip raw OCR text — noisy for search queries; model numbers are handled via speculative searches
 	if len(terms) == 0 {
 		return query
 	}
 	return strings.TrimSpace(query + " " + strings.Join(terms, " "))
+}
+
+// isLikelyModelNumber returns true when text looks like a product model number
+// (3–25 chars, contains both letters and digits).
+func isLikelyModelNumber(text string) bool {
+	text = strings.TrimSpace(text)
+	if len(text) < 3 || len(text) > 25 {
+		return false
+	}
+	hasLetter, hasDigit := false, false
+	for _, r := range text {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+			hasLetter = true
+		}
+		if r >= '0' && r <= '9' {
+			hasDigit = true
+		}
+	}
+	return hasLetter && hasDigit
 }
 
 func appendEvidenceTerm(terms []string, value string) []string {
