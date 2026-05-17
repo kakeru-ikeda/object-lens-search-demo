@@ -5,12 +5,14 @@ interface SearchResultListProps {
 }
 
 export function SearchResultList({ results }: SearchResultListProps) {
+  const uniqueResults = dedupeResults(results);
+
   return (
     <div className="flex flex-col gap-4 mt-4">
       <h3 className="text-lg font-semibold text-neutral-900">検索結果</h3>
-      {results.map((result) => (
+      {uniqueResults.map((result, index) => (
         <a 
-          key={result.id} 
+          key={searchResultKey(result, index)} 
           href={result.url}
           target="_blank"
           rel="noopener noreferrer"
@@ -23,4 +25,30 @@ export function SearchResultList({ results }: SearchResultListProps) {
       ))}
     </div>
   );
+}
+
+function dedupeResults(results: NormalizedSearchResult[]) {
+  const seen = new Set<string>();
+  const deduped: NormalizedSearchResult[] = [];
+  for (const result of results) {
+    const key = normalizedResultIdentity(result);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    deduped.push(result);
+  }
+  return deduped;
+}
+
+function searchResultKey(result: NormalizedSearchResult, index: number) {
+  return `${normalizedResultIdentity(result)}:${result.rank}:${index}`;
+}
+
+function normalizedResultIdentity(result: NormalizedSearchResult) {
+  const url = result.url.trim().toLowerCase();
+  if (url) {
+    return url;
+  }
+  return `${result.id}:${result.title}:${result.snippet}`.trim().toLowerCase();
 }

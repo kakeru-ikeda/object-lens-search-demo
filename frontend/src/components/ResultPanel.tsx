@@ -1,9 +1,13 @@
 import { EvidenceItem, RecognizeSearchResponse, VisualEvidence } from '../types';
 import { SearchResultList } from './SearchResultList';
-import { X } from 'lucide-react';
+import { Loader2, X, AlertTriangle } from 'lucide-react';
+import { PartialData } from '../hooks/useRecognizeSearch';
 
 interface ResultPanelProps {
-  data: RecognizeSearchResponse;
+  data: RecognizeSearchResponse | null;
+  partialData?: PartialData | null;
+  loading?: boolean;
+  error?: Error | null;
   onClose: () => void;
 }
 
@@ -33,17 +37,32 @@ function hasEvidence(evidence?: VisualEvidence) {
   );
 }
 
-export function ResultPanel({ data, onClose }: ResultPanelProps) {
-  const evidence = data.recognizedObject.visualEvidence;
+export function ResultPanel({ data, partialData, loading, error, onClose }: ResultPanelProps) {
+  const isFinal = !!data;
+  const showHypothesis = !isFinal && partialData?.hypothesis;
+  const showQuery = !isFinal && partialData?.query;
+  const showResults = !isFinal && partialData?.searchResults;
+  const evidence = data?.recognizedObject.visualEvidence;
 
   return (
     <div className="flex flex-col w-full max-w-md mx-auto bg-neutral-50 rounded-t-2xl p-5 sm:p-6 overflow-y-auto max-h-[min(78dvh,calc(100dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-1rem))] shadow-xl">
       <div className="flex justify-between items-start mb-4">
         <div>
-          <h2 className="text-xl font-bold text-neutral-900">{data.recognizedObject.objectName}</h2>
-          <span className="text-xs font-medium px-2 py-1 bg-blue-100 text-blue-700 rounded-full">
-            {data.recognizedObject.confidence} confidence
-          </span>
+          {isFinal ? (
+            <>
+              <h2 className="text-xl font-bold text-neutral-900">{data.recognizedObject.objectName}</h2>
+              <span className="text-xs font-medium px-2 py-1 bg-blue-100 text-blue-700 rounded-full mt-2 inline-block">
+                {data.recognizedObject.confidence} confidence
+              </span>
+            </>
+          ) : (
+            <div className="flex items-center gap-2">
+              <h2 className="text-xl font-bold text-neutral-900">
+                {error ? 'エラーが発生しました' : '検索中...'}
+              </h2>
+              {loading && <Loader2 className="w-5 h-5 animate-spin text-blue-500" />}
+            </div>
+          )}
         </div>
         <button
           type="button"
@@ -55,9 +74,34 @@ export function ResultPanel({ data, onClose }: ResultPanelProps) {
         </button>
       </div>
 
-      <p className="text-neutral-700 mb-6">{data.recognizedObject.description}</p>
+      {error && (
+        <div className="p-4 bg-red-50 text-red-700 rounded-lg border border-red-200 mb-6 flex items-start gap-3">
+          <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5" />
+          <p className="text-sm font-medium">{error.message}</p>
+        </div>
+      )}
 
-      {(data.inputSummary || data.evidenceFusion) && (
+      {isFinal ? (
+        <p className="text-neutral-700 mb-6">{data.recognizedObject.description}</p>
+      ) : showHypothesis ? (
+        <div className="p-4 bg-amber-50 rounded-lg border border-amber-200 mb-6">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="relative flex h-2 w-2">
+              {loading && <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>}
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+            </span>
+            <h3 className="text-sm font-semibold text-amber-900">LLMの仮説 (未検証)</h3>
+          </div>
+          <p className="text-sm text-amber-800 italic">{partialData.hypothesis}</p>
+          {showQuery && (
+            <p className="text-xs text-amber-700 mt-2 font-mono bg-amber-100 p-2 rounded">
+              検索クエリ: {partialData.query}
+            </p>
+          )}
+        </div>
+      ) : null}
+
+      {isFinal && (data.inputSummary || data.evidenceFusion) && (
         <div className="p-4 bg-white rounded-lg border border-neutral-200 mb-4">
           <h3 className="text-sm font-semibold text-neutral-900 mb-2">複数画像の統合</h3>
           {data.inputSummary && (
@@ -75,34 +119,36 @@ export function ResultPanel({ data, onClose }: ResultPanelProps) {
         </div>
       )}
 
-      <div className="p-4 bg-white rounded-lg border border-neutral-200 mb-4">
-        <h3 className="text-sm font-semibold text-neutral-900 mb-2">画像入力シグナル</h3>
-        <div className="grid grid-cols-3 gap-2 text-xs text-neutral-700">
-          <div>
-            <span className="block text-neutral-500">crop</span>
-            <span className="font-medium">{data.queryQuality.cropConfidence}</span>
+      {isFinal && (
+        <div className="p-4 bg-white rounded-lg border border-neutral-200 mb-4">
+          <h3 className="text-sm font-semibold text-neutral-900 mb-2">画像入力シグナル</h3>
+          <div className="grid grid-cols-3 gap-2 text-xs text-neutral-700">
+            <div>
+              <span className="block text-neutral-500">crop</span>
+              <span className="font-medium">{data.queryQuality.cropConfidence}</span>
+            </div>
+            <div>
+              <span className="block text-neutral-500">blur</span>
+              <span className="font-medium">{data.queryQuality.blur}</span>
+            </div>
+            <div>
+              <span className="block text-neutral-500">text</span>
+              <span className="font-medium">{data.queryQuality.textVisibility}</span>
+            </div>
           </div>
-          <div>
-            <span className="block text-neutral-500">blur</span>
-            <span className="font-medium">{data.queryQuality.blur}</span>
-          </div>
-          <div>
-            <span className="block text-neutral-500">text</span>
-            <span className="font-medium">{data.queryQuality.textVisibility}</span>
-          </div>
-        </div>
-        <p className="mt-3 text-xs text-neutral-500">
-          {statusLabel[data.queryQuality.status] ?? data.queryQuality.status}
-          {data.queryQuality.evidenceTypes?.length ? ` / 証拠: ${data.queryQuality.evidenceTypes.join(', ')}` : ''}
-        </p>
-        {data.ambiguity.isAmbiguous && (
-          <p className="mt-3 text-xs text-amber-700 bg-amber-50 rounded-md px-3 py-2">
-            判定が曖昧です: {data.ambiguity.reason}
+          <p className="mt-3 text-xs text-neutral-500">
+            {statusLabel[data.queryQuality.status] ?? data.queryQuality.status}
+            {data.queryQuality.evidenceTypes?.length ? ` / 証拠: ${data.queryQuality.evidenceTypes.join(', ')}` : ''}
           </p>
-        )}
-      </div>
+          {data.ambiguity.isAmbiguous && (
+            <p className="mt-3 text-xs text-amber-700 bg-amber-50 rounded-md px-3 py-2">
+              判定が曖昧です: {data.ambiguity.reason}
+            </p>
+          )}
+        </div>
+      )}
 
-      {hasEvidence(evidence) && (
+      {isFinal && hasEvidence(evidence) && (
         <div className="p-4 bg-white rounded-lg border border-neutral-200 mb-4">
           <h3 className="text-sm font-semibold text-neutral-900 mb-2">Cloud Vision 証拠</h3>
           <div className="space-y-2 text-xs text-neutral-700">
@@ -116,12 +162,19 @@ export function ResultPanel({ data, onClose }: ResultPanelProps) {
         </div>
       )}
 
-      <div className="p-4 bg-white rounded-lg border border-neutral-200 mb-6">
-        <h3 className="text-sm font-semibold text-neutral-900 mb-2">要約</h3>
-        <p className="text-sm text-neutral-700">{data.summary.text}</p>
-      </div>
+      {isFinal && (
+        <div className="p-4 bg-white rounded-lg border border-neutral-200 mb-6">
+          <h3 className="text-sm font-semibold text-neutral-900 mb-2">要約</h3>
+          <p className="text-sm text-neutral-700">{data.summary.text}</p>
+        </div>
+      )}
 
-      <SearchResultList results={data.search.results} />
+      {isFinal && data.search.results.length > 0 && <SearchResultList results={data.search.results} />}
+      {!isFinal && showResults && partialData.searchResults && partialData.searchResults.length > 0 && (
+        <div className="opacity-70 grayscale-[20%] transition-all">
+          <SearchResultList results={partialData.searchResults} />
+        </div>
+      )}
     </div>
   );
 }
