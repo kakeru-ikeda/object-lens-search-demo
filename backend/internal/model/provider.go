@@ -59,8 +59,11 @@ type SummarizeSearchResultsRequest struct {
 }
 
 type SummarizeSearchResultsResponse struct {
-	Text  string
-	Model string
+	Text            string
+	DisplayName     string
+	Category        string
+	FinalObjectName string
+	Model           string
 }
 
 type SearchRequest struct {

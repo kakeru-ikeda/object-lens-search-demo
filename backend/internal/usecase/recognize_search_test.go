@@ -30,6 +30,78 @@ func (s stubVision) Close() error {
 	return nil
 }
 
+const refinedPackageName = "『サンプル映画タイトル』Blu-ray/DVDパッケージ"
+
+type evidenceRefiningLLM struct {
+	mu                     sync.Mutex
+	recognizedWithEvidence []bool
+}
+
+func (l *evidenceRefiningLLM) RecognizeObject(ctx context.Context, req model.RecognizeObjectRequest) (*model.RecognizeObjectResponse, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+	withEvidence := req.VisualEvidence != nil && !req.VisualEvidence.Empty()
+	l.mu.Lock()
+	l.recognizedWithEvidence = append(l.recognizedWithEvidence, withEvidence)
+	l.mu.Unlock()
+	if withEvidence {
+		return &model.RecognizeObjectResponse{Object: model.RecognizedObject{ObjectName: "サンプル映画タイトル", DisplayName: "『サンプル映画タイトル』", Category: "Blu-ray/DVDパッケージ", FinalObjectName: refinedPackageName, Description: "OCRと検索証拠で特定した映像パッケージです。", SearchQuery: refinedPackageName, Confidence: "high", NeedsMoreContext: false}, Model: "refiner"}, nil
+	}
+	return &model.RecognizeObjectResponse{Object: model.RecognizedObject{ObjectName: "アニメCD/音楽アルバム", Description: "アニメキャラクターが描かれた音楽CDまたはアルバムのパッケージ。", SearchQuery: "アニメ CD 音楽アルバム", Confidence: "medium", NeedsMoreContext: true}, Model: "refiner"}, nil
+}
+
+func (l *evidenceRefiningLLM) HypothesizeObject(ctx context.Context, req model.HypothesizeObjectRequest) (*model.HypothesizeObjectResponse, error) {
+	return &model.HypothesizeObjectResponse{Object: model.RecognizedObject{ObjectName: "アニメCD/音楽アルバム", Description: "暫定仮説です。", SearchQuery: "アニメ CD 音楽アルバム", Confidence: "low", NeedsMoreContext: true}, Model: "refiner-light"}, nil
+}
+
+func (l *evidenceRefiningLLM) SummarizeSearchResults(ctx context.Context, req model.SummarizeSearchResultsRequest) (*model.SummarizeSearchResultsResponse, error) {
+	return &model.SummarizeSearchResultsResponse{Text: "検索結果とOCRからサンプル映画タイトルのBlu-ray/DVDパッケージです。", DisplayName: req.RecognizedObject.DisplayName, Category: req.RecognizedObject.Category, FinalObjectName: refinedPackageName, Model: "refiner"}, nil
+}
+
+func (l *evidenceRefiningLLM) calls() []bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]bool(nil), l.recognizedWithEvidence...)
+}
+
+func TestExecuteRefinesRecognitionWithCloudVisionEvidenceAndFinalObjectName(t *testing.T) {
+	llm := &evidenceRefiningLLM{}
+	uc := &RecognizeSearchUsecase{
+		LLM:            llm,
+		Searcher:       &mocksearch.Client{},
+		Vision:         stubVision{evidence: model.VisualEvidence{OCR: []model.EvidenceItem{{Text: refinedPackageName, Score: 0.99}}, WebEntities: []model.EvidenceItem{{Text: "Sample Movie Blu-ray", Score: 0.92}}}},
+		LLMProvider:    "refiner",
+		SearchProvider: "mock",
+	}
+	resp, err := uc.Execute(context.Background(), ExecuteRequest{RequestID: "req", Request: model.RecognizeSearchRequest{ImageBase64: "data:image/jpeg;base64,aW1hZ2U=", Language: "ja", Options: model.RequestOptions{MaxSearchResults: 1}}, MIMEType: "image/jpeg"})
+	if err != nil {
+		t.Fatalf("unexpected execute error: %v", err)
+	}
+	if resp.RecognizedObject.FinalObjectName != refinedPackageName {
+		t.Fatalf("expected final object name %q, got %#v", refinedPackageName, resp.RecognizedObject)
+	}
+	if resp.RecognizedObject.Category != "Blu-ray/DVDパッケージ" || resp.RecognizedObject.DisplayName == "" {
+		t.Fatalf("expected separated display/category fields, got %#v", resp.RecognizedObject)
+	}
+	calls := llm.calls()
+	if len(calls) != 2 || calls[0] || !calls[1] {
+		t.Fatalf("expected initial recognition without evidence then refinement with evidence, got %#v", calls)
+	}
+}
+
+func TestEvidenceQuerySourcesPreferOCR(t *testing.T) {
+	sources := evidenceQuerySources(&model.VisualEvidence{Logos: []model.EvidenceItem{{Text: "Coarse Logo", Score: 0.99}}, BestGuessLabels: []string{"coarse guess"}, WebEntities: []model.EvidenceItem{{Text: "Web Entity", Score: 0.91}}, OCR: []model.EvidenceItem{{Text: "label: Exact Product Title Blu-ray", Score: 0.97}}}, model.RecognizeSearchRequest{Images: []model.ImageInput{{ID: "label"}}})
+	if len(sources) == 0 {
+		t.Fatal("expected evidence query sources")
+	}
+	if sources[0].source != "vision_ocr_query" || sources[0].query != "Exact Product Title Blu-ray" {
+		t.Fatalf("expected OCR query first without image prefix, got %#v", sources)
+	}
+}
+
 func TestExecuteAttachesCloudVisionEvidence(t *testing.T) {
 	uc := &RecognizeSearchUsecase{
 		LLM:            &mock.Client{Model: "mock"},

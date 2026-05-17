@@ -36,19 +36,16 @@ func (c *Client) RecognizeObject(ctx context.Context, req model.RecognizeObjectR
 	if c.Runtime == nil || strings.TrimSpace(c.ModelID) == "" {
 		return nil, errors.New("bedrock runtime and model ID are required")
 	}
-	mediaType, data, err := parseDataURL(req.ImageDataURL)
+	prompt := recognitionPrompt(req.Language, req.VisualEvidence)
+	content, err := imageRequestContent(req.ImageDataURL, req.Crops, req.Images, prompt)
 	if err != nil {
 		return nil, err
 	}
-	prompt := recognitionPrompt(req.Language, req.VisualEvidence)
 	body := anthropicRequest{
 		AnthropicVersion: "bedrock-2023-05-31",
 		MaxTokens:        700,
 		Temperature:      aws.Float64(0.2),
-		Messages: []anthropicMessage{{Role: "user", Content: []anthropicContent{
-			{Type: "image", Source: &anthropicImageSource{Type: "base64", MediaType: mediaType, Data: data}},
-			{Type: "text", Text: prompt},
-		}}},
+		Messages:         []anthropicMessage{{Role: "user", Content: content}},
 	}
 	var parsed model.RecognizedObject
 	if err := c.invokeJSON(ctx, body, &parsed); err != nil {
@@ -76,12 +73,15 @@ func (c *Client) SummarizeSearchResults(ctx context.Context, req model.Summarize
 		Messages:         []anthropicMessage{{Role: "user", Content: []anthropicContent{{Type: "text", Text: prompt}}}},
 	}
 	var parsed struct {
-		Text string `json:"text"`
+		Text            string `json:"text"`
+		DisplayName     string `json:"displayName"`
+		Category        string `json:"category"`
+		FinalObjectName string `json:"finalObjectName"`
 	}
 	if err := c.invokeJSON(ctx, body, &parsed); err != nil {
 		return nil, err
 	}
-	return &model.SummarizeSearchResultsResponse{Text: parsed.Text, Model: c.ModelID}, nil
+	return &model.SummarizeSearchResultsResponse{Text: parsed.Text, DisplayName: parsed.DisplayName, Category: parsed.Category, FinalObjectName: parsed.FinalObjectName, Model: c.ModelID}, nil
 }
 
 func (c *Client) HypothesizeObject(ctx context.Context, req model.HypothesizeObjectRequest) (*model.HypothesizeObjectResponse, error) {
@@ -92,19 +92,16 @@ func (c *Client) HypothesizeObject(ctx context.Context, req model.HypothesizeObj
 	if c.Runtime == nil || modelID == "" {
 		return nil, errors.New("bedrock runtime and light model ID are required")
 	}
-	mediaType, data, err := parseDataURL(req.ImageDataURL)
+	prompt := hypothesisPrompt(req.Language, req.VisualEvidence)
+	content, err := imageRequestContent(req.ImageDataURL, req.Crops, req.Images, prompt)
 	if err != nil {
 		return nil, err
 	}
-	prompt := hypothesisPrompt(req.Language, req.VisualEvidence)
 	body := anthropicRequest{
 		AnthropicVersion: "bedrock-2023-05-31",
 		MaxTokens:        350,
 		Temperature:      aws.Float64(0.1),
-		Messages: []anthropicMessage{{Role: "user", Content: []anthropicContent{
-			{Type: "image", Source: &anthropicImageSource{Type: "base64", MediaType: mediaType, Data: data}},
-			{Type: "text", Text: prompt},
-		}}},
+		Messages:         []anthropicMessage{{Role: "user", Content: content}},
 	}
 	var parsed model.RecognizedObject
 	if err := c.invokeJSONWithModel(ctx, modelID, body, &parsed); err != nil {
@@ -195,6 +192,74 @@ func parseDataURL(value string) (string, string, error) {
 	return strings.TrimPrefix(meta, "data:"), payload, nil
 }
 
+const maxBedrockImageInputs = 10
+
+type bedrockImagePart struct {
+	label   string
+	dataURL string
+}
+
+func imageRequestContent(primaryImageDataURL string, crops *model.ImageCrops, images []model.RecognizeImageInput, prompt string) ([]anthropicContent, error) {
+	parts := bedrockImageParts(primaryImageDataURL, crops, images)
+	if len(parts) == 0 {
+		return nil, errors.New("image data URL is required")
+	}
+	content := make([]anthropicContent, 0, len(parts)*2+1)
+	for _, part := range parts {
+		mediaType, data, err := parseDataURL(part.dataURL)
+		if err != nil {
+			return nil, err
+		}
+		if part.label != "" {
+			content = append(content, anthropicContent{Type: "text", Text: part.label})
+		}
+		content = append(content, anthropicContent{Type: "image", Source: &anthropicImageSource{Type: "base64", MediaType: mediaType, Data: data}})
+	}
+	content = append(content, anthropicContent{Type: "text", Text: prompt})
+	return content, nil
+}
+
+func bedrockImageParts(primaryImageDataURL string, crops *model.ImageCrops, images []model.RecognizeImageInput) []bedrockImagePart {
+	parts := make([]bedrockImagePart, 0, maxBedrockImageInputs)
+	seen := map[string]struct{}{}
+	appendPart := func(label string, value string) {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" || len(parts) >= maxBedrockImageInputs {
+			return
+		}
+		if _, exists := seen[trimmed]; exists {
+			return
+		}
+		seen[trimmed] = struct{}{}
+		parts = append(parts, bedrockImagePart{label: label, dataURL: trimmed})
+	}
+	if len(images) > 0 {
+		for i, image := range images {
+			baseLabel := fmt.Sprintf("Image %d", i+1)
+			if id := strings.TrimSpace(image.ID); id != "" {
+				baseLabel += " id=" + id
+			}
+			if role := strings.TrimSpace(image.Role); role != "" {
+				baseLabel += " role=" + role
+			}
+			appendPart(baseLabel+" primary crop", image.ImageDataURL)
+			if image.Crops != nil {
+				appendPart(baseLabel+" tight crop", image.Crops.TightCrop)
+				appendPart(baseLabel+" context crop", image.Crops.ContextCrop)
+				appendPart(baseLabel+" text enhanced crop", image.Crops.TextEnhancedCrop)
+			}
+		}
+		return parts
+	}
+	appendPart("Primary image", primaryImageDataURL)
+	if crops != nil {
+		appendPart("Tight crop", crops.TightCrop)
+		appendPart("Context crop", crops.ContextCrop)
+		appendPart("Text enhanced crop", crops.TextEnhancedCrop)
+	}
+	return parts
+}
+
 type compactSearchResult struct {
 	Title       string  `json:"title"`
 	URL         string  `json:"url"`
@@ -222,7 +287,7 @@ func compactSearchResults(results []model.NormalizedSearchResult) []compactSearc
 }
 
 func recognitionPrompt(language string, evidence *model.VisualEvidence) string {
-	base := "Identify the main object in this image. Return only valid JSON with objectName, description, searchQuery, confidence (low|medium|high), needsMoreContext. Use language " + language + ". Do not include markdown."
+	base := "Identify the main object across the provided image(s). Return only valid JSON with objectName, displayName, category, finalObjectName, description, searchQuery, confidence (low|medium|high), needsMoreContext. objectName is the initial visual label, displayName is the exact product/title/name when visible or web-supported, category is the object/media/product type, and finalObjectName is the best UI headline combining displayName and category. Use language " + language + ". Do not include markdown."
 	if evidence == nil || evidence.Empty() {
 		return base
 	}
@@ -230,7 +295,7 @@ func recognitionPrompt(language string, evidence *model.VisualEvidence) string {
 	if err != nil {
 		return base
 	}
-	return base + " Use these Google Cloud Vision evidence signals as corroborating evidence, not as absolute truth. Prefer OCR/logo/web entities when they agree. Evidence JSON: " + string(compact)
+	return base + " Use these Google Cloud Vision evidence signals as corroborating evidence, not as absolute truth. Prefer OCR text and catalog/title-like web entities over coarse labels when they agree. Evidence JSON: " + string(compact)
 }
 
 func summarizePrompt(language string, object model.RecognizedObject, results string) string {
@@ -241,11 +306,21 @@ func summarizePrompt(language string, object model.RecognizedObject, results str
 			evidence = " Cloud Vision evidence JSON: " + string(compact)
 		}
 	}
-	return fmt.Sprintf("Summarize these search results for object %q. Return only valid JSON {\"text\":\"...\"}. Use language %s.%s Results JSON: %s", object.ObjectName, language, evidence, results)
+	return fmt.Sprintf("Summarize these search results for object %q. Return only valid JSON {\"text\":\"...\",\"displayName\":\"...\",\"category\":\"...\",\"finalObjectName\":\"...\"}. Use language %s. Choose displayName/category/finalObjectName from the same evidence used for the summary: OCR, Cloud Vision web entities, and search result titles/snippets. finalObjectName must be a concrete UI headline, not a broad category, when search/OCR identify a title or product.%s Results JSON: %s", objectIdentityForPrompt(object), language, evidence, results)
+}
+
+func objectIdentityForPrompt(object model.RecognizedObject) string {
+	for _, value := range []string{object.FinalObjectName, object.DisplayName, object.ObjectName} {
+		trimmed := strings.TrimSpace(value)
+		if trimmed != "" {
+			return trimmed
+		}
+	}
+	return "unknown object"
 }
 
 func hypothesisPrompt(language string, evidence *model.VisualEvidence) string {
-	base := "Quickly identify likely main object in image. Return only valid JSON with objectName, description, searchQuery, confidence (low|medium|high), needsMoreContext. Prefer concise searchQuery suitable for web search. Use language " + language + ". Do not include markdown."
+	base := "Quickly identify likely main object across the provided image(s). Return only valid JSON with objectName, displayName, category, finalObjectName, description, searchQuery, confidence (low|medium|high), needsMoreContext. Prefer concise searchQuery suitable for web search. Use language " + language + ". Do not include markdown."
 	if evidence == nil || evidence.Empty() {
 		return base
 	}

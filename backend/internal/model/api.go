@@ -67,6 +67,9 @@ func (e VisualEvidence) Empty() bool {
 
 type RecognizedObject struct {
 	ObjectName       string          `json:"objectName"`
+	DisplayName      string          `json:"displayName,omitempty"`
+	Category         string          `json:"category,omitempty"`
+	FinalObjectName  string          `json:"finalObjectName,omitempty"`
 	Description      string          `json:"description"`
 	SearchQuery      string          `json:"searchQuery"`
 	Confidence       string          `json:"confidence"`
