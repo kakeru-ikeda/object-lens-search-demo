@@ -1,4 +1,4 @@
-import { EvidenceItem, RecognizeSearchResponse, VisualEvidence } from '../types';
+import { EvidenceItem, RecognizeSearchResponse, RelatedImage, VisualEvidence } from '../types';
 import { SearchResultList } from './SearchResultList';
 import { Loader2, X, AlertTriangle } from 'lucide-react';
 import { PartialData } from '../hooks/useRecognizeSearch';
@@ -33,8 +33,26 @@ function hasEvidence(evidence?: VisualEvidence) {
         (evidence.webEntities?.length ?? 0) > 0 ||
         (evidence.bestGuessLabels?.length ?? 0) > 0 ||
         (evidence.labels?.length ?? 0) > 0 ||
-        (evidence.matchingImageUrls?.length ?? 0) > 0),
+        (evidence.matchingImageUrls?.length ?? 0) > 0 ||
+        (evidence.relatedImages?.length ?? 0) > 0),
   );
+}
+
+function relatedImagesFor(evidence?: VisualEvidence) {
+  if (!evidence) return [];
+  const images: RelatedImage[] = [];
+  const seen = new Set<string>();
+  const append = (image: RelatedImage) => {
+    const url = image.url?.trim();
+    if (!url) return;
+    const key = url.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    images.push({ ...image, url });
+  };
+  evidence.relatedImages?.forEach(append);
+  evidence.matchingImageUrls?.forEach((url) => append({ url, matchType: 'full_match' }));
+  return images.slice(0, 12);
 }
 
 function headlineFor(data: RecognizeSearchResponse) {
@@ -49,6 +67,7 @@ export function ResultPanel({ data, partialData, loading, error, onClose }: Resu
   const showResults = !isFinal && partialData?.searchResults;
   const evidence = data?.recognizedObject.visualEvidence;
   const category = data?.recognizedObject.category;
+  const relatedImages = relatedImagesFor(evidence);
 
   return (
     <div className="flex flex-col w-full max-w-md mx-auto bg-neutral-50 rounded-t-2xl p-5 sm:p-6 overflow-y-auto max-h-[min(78dvh,calc(100dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-1rem))] shadow-xl">
@@ -170,10 +189,11 @@ export function ResultPanel({ data, partialData, loading, error, onClose }: Resu
             {itemText(evidence?.webEntities) && <EvidenceRow label="Web" value={itemText(evidence?.webEntities)} />}
             {evidence?.bestGuessLabels?.length ? <EvidenceRow label="推定" value={evidence.bestGuessLabels.join(', ')} /> : null}
             {itemText(evidence?.labels) && <EvidenceRow label="ラベル" value={itemText(evidence?.labels)} />}
-            {evidence?.matchingImageUrls?.length ? <EvidenceRow label="一致画像" value={`${evidence.matchingImageUrls.length}件`} /> : null}
           </div>
         </div>
       )}
+
+      {isFinal && relatedImages.length > 0 && <RelatedImageGrid images={relatedImages} />}
 
       {isFinal && (
         <div className="p-4 bg-white rounded-lg border border-neutral-200 mb-6">
@@ -190,6 +210,55 @@ export function ResultPanel({ data, partialData, loading, error, onClose }: Resu
       )}
     </div>
   );
+}
+
+function RelatedImageGrid({ images }: { images: RelatedImage[] }) {
+  return (
+    <div className="p-4 bg-white rounded-lg border border-neutral-200 mb-4">
+      <h3 className="text-sm font-semibold text-neutral-900 mb-3">一致・類似画像</h3>
+      <div className="grid grid-cols-3 gap-2">
+        {images.map((image, index) => (
+          <a
+            key={`${image.url}:${index}`}
+            href={image.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={image.pageTitle || image.pageUrl || image.url}
+            className="group relative aspect-square overflow-hidden rounded-md border border-neutral-200 bg-neutral-100 shadow-sm transition-colors hover:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+          >
+            <img
+              src={image.url}
+              alt={image.pageTitle || matchLabel(image.matchType)}
+              className="h-full w-full object-cover transition-transform group-hover:scale-[1.03]"
+              loading="lazy"
+              referrerPolicy="no-referrer"
+            />
+            <span className="absolute left-1 top-1 max-w-[calc(100%-0.5rem)] truncate rounded bg-neutral-950/80 px-1.5 py-0.5 text-[10px] font-medium text-white">
+              {matchLabel(image.matchType)}
+            </span>
+            {image.sourceImageId && (
+              <span className="absolute bottom-1 right-1 max-w-[calc(100%-0.5rem)] truncate rounded bg-white/90 px-1.5 py-0.5 text-[10px] font-medium text-neutral-700">
+                {image.sourceImageId}
+              </span>
+            )}
+          </a>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function matchLabel(matchType?: string) {
+  switch (matchType) {
+    case 'full_match':
+      return '完全';
+    case 'partial_match':
+      return '部分';
+    case 'visually_similar':
+      return '類似';
+    default:
+      return '画像';
+  }
 }
 
 function EvidenceRow({ label, value }: { label: string; value: string }) {

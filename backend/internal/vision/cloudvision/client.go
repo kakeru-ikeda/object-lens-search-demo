@@ -15,7 +15,14 @@ import (
 	"object-lens-search-demo/backend/internal/model"
 )
 
-const defaultMaxResults = 10
+const (
+	defaultMaxResults = 10
+	maxRelatedImages  = 12
+
+	matchTypeFull    = "full_match"
+	matchTypePartial = "partial_match"
+	matchTypeSimilar = "visually_similar"
+)
 
 type Annotator interface {
 	BatchAnnotateImages(ctx context.Context, req *visionpb.BatchAnnotateImagesRequest, opts ...gax.CallOption) (*visionpb.BatchAnnotateImagesResponse, error)
@@ -137,19 +144,121 @@ func normalize(resp *visionpb.AnnotateImageResponse) model.VisualEvidence {
 				evidence.BestGuessLabels = append(evidence.BestGuessLabels, value)
 			}
 		}
-		for _, image := range web.FullMatchingImages {
-			if url := strings.TrimSpace(image.Url); url != "" {
-				evidence.MatchingImageURLs = append(evidence.MatchingImageURLs, url)
-			}
-		}
-		for _, image := range web.PartialMatchingImages {
-			if url := strings.TrimSpace(image.Url); url != "" {
-				evidence.MatchingImageURLs = append(evidence.MatchingImageURLs, url)
+		evidence.RelatedImages = relatedImagesFromWeb(web)
+		for _, image := range evidence.RelatedImages {
+			if image.MatchType != matchTypeSimilar {
+				evidence.MatchingImageURLs = append(evidence.MatchingImageURLs, image.URL)
 			}
 		}
 	}
 	trimEvidence(&evidence)
 	return evidence
+}
+
+func relatedImagesFromWeb(web *visionpb.WebDetection) []model.RelatedImage {
+	images := make([]model.RelatedImage, 0)
+	for _, page := range web.PagesWithMatchingImages {
+		if page == nil {
+			continue
+		}
+		pageURL := strings.TrimSpace(page.Url)
+		pageTitle := strings.TrimSpace(page.PageTitle)
+		for _, image := range page.FullMatchingImages {
+			images = appendRelatedImage(images, relatedImage(image, matchTypeFull, pageURL, pageTitle, page.Score))
+		}
+		for _, image := range page.PartialMatchingImages {
+			images = appendRelatedImage(images, relatedImage(image, matchTypePartial, pageURL, pageTitle, page.Score))
+		}
+	}
+	for _, image := range web.FullMatchingImages {
+		images = appendRelatedImage(images, relatedImage(image, matchTypeFull, "", "", 0))
+	}
+	for _, image := range web.PartialMatchingImages {
+		images = appendRelatedImage(images, relatedImage(image, matchTypePartial, "", "", 0))
+	}
+	for _, image := range web.VisuallySimilarImages {
+		images = appendRelatedImage(images, relatedImage(image, matchTypeSimilar, "", "", 0))
+	}
+	return trimRelatedImages(images, maxRelatedImages)
+}
+
+func relatedImage(image *visionpb.WebDetection_WebImage, matchType string, pageURL string, pageTitle string, pageScore float32) model.RelatedImage {
+	if image == nil {
+		return model.RelatedImage{}
+	}
+	score := image.Score
+	if score == 0 {
+		score = pageScore
+	}
+	return model.RelatedImage{URL: strings.TrimSpace(image.Url), MatchType: matchType, PageURL: strings.TrimSpace(pageURL), PageTitle: strings.TrimSpace(pageTitle), Score: float64(score)}
+}
+
+func appendRelatedImage(images []model.RelatedImage, image model.RelatedImage) []model.RelatedImage {
+	image.URL = strings.TrimSpace(image.URL)
+	image.MatchType = strings.TrimSpace(image.MatchType)
+	image.PageURL = strings.TrimSpace(image.PageURL)
+	image.PageTitle = strings.TrimSpace(image.PageTitle)
+	if image.URL == "" {
+		return images
+	}
+	for i := range images {
+		if strings.EqualFold(images[i].URL, image.URL) {
+			images[i] = mergeRelatedImage(images[i], image)
+			return images
+		}
+	}
+	return append(images, image)
+}
+
+func mergeRelatedImage(current model.RelatedImage, next model.RelatedImage) model.RelatedImage {
+	if matchPriority(next.MatchType) < matchPriority(current.MatchType) {
+		current.MatchType = next.MatchType
+	}
+	if current.PageURL == "" {
+		current.PageURL = next.PageURL
+	}
+	if current.PageTitle == "" {
+		current.PageTitle = next.PageTitle
+	}
+	if next.Score > current.Score {
+		current.Score = next.Score
+	}
+	return current
+}
+
+func trimRelatedImages(images []model.RelatedImage, limit int) []model.RelatedImage {
+	if len(images) == 0 {
+		return nil
+	}
+	deduped := make([]model.RelatedImage, 0, len(images))
+	for _, image := range images {
+		deduped = appendRelatedImage(deduped, image)
+	}
+	sort.SliceStable(deduped, func(i, j int) bool {
+		leftPriority := matchPriority(deduped[i].MatchType)
+		rightPriority := matchPriority(deduped[j].MatchType)
+		if leftPriority != rightPriority {
+			return leftPriority < rightPriority
+		}
+		return deduped[i].Score > deduped[j].Score
+	})
+	if limit > 0 && len(deduped) > limit {
+		return deduped[:limit]
+	}
+	return deduped
+}
+
+func matchPriority(matchType string) int {
+	switch matchType {
+	case matchTypeFull:
+		return 0
+	case matchTypePartial:
+		return 1
+	case matchTypeSimilar:
+		return 2
+	default:
+		return 3
+	}
 }
 
 func evidenceItem(text string, score float32) model.EvidenceItem {
@@ -163,6 +272,7 @@ func trimEvidence(e *model.VisualEvidence) {
 	e.Labels = topItems(e.Labels, 10)
 	e.BestGuessLabels = uniqueStrings(e.BestGuessLabels, 5)
 	e.MatchingImageURLs = uniqueStrings(e.MatchingImageURLs, 5)
+	e.RelatedImages = trimRelatedImages(e.RelatedImages, maxRelatedImages)
 }
 
 func topItems(items []model.EvidenceItem, limit int) []model.EvidenceItem {

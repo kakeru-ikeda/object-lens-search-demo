@@ -3,6 +3,15 @@ export interface EvidenceItem {
   score?: number;
 }
 
+export interface RelatedImage {
+  url: string;
+  matchType: 'full_match' | 'partial_match' | 'visually_similar' | string;
+  pageUrl?: string;
+  pageTitle?: string;
+  score?: number;
+  sourceImageId?: string;
+}
+
 export interface VisualEvidence {
   ocr?: EvidenceItem[];
   logos?: EvidenceItem[];
@@ -10,6 +19,7 @@ export interface VisualEvidence {
   bestGuessLabels?: string[];
   labels?: EvidenceItem[];
   matchingImageUrls?: string[];
+  relatedImages?: RelatedImage[];
 }
 
 export interface RecognizedObject {
