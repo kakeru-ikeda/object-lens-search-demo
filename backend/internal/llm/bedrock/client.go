@@ -228,13 +228,14 @@ Return ONLY valid JSON (no markdown, no explanation) with these fields:
 - objectName: exact product name including brand and model (e.g. "Nike Air Max 270 React")
 - description: one-sentence description in language ` + language + `
 - searchQuery: the single best query to find the official product listing page. Follow this priority:
-    1. "<Brand> <ModelName> <ModelNumber/SKU>" — use if identifiable
-    2. "<Brand> <ProductCategory> <KeyDistinguishingFeature>"
-    3. Descriptive fallback (last resort only)
+    1. "<Brand> <ModelNumber/SKU>" — HIGHEST PRIORITY if a model number is detected (see below)
+    2. "<Brand> <ModelName> <ModelNumber/SKU>" — use if both name and number are identifiable
+    3. "<Brand> <ProductCategory> <KeyDistinguishingFeature>"
+    4. Descriptive fallback (last resort only)
   IMPORTANT: Do NOT describe visual appearance (color, shape). Generate the query a buyer would type to find THIS specific product.
 - searchQueries: array of up to 3 additional query objects, each with "query" (string) and "intent" (string). Use these intents:
     - "product_page": query targeting the official product or purchase page
-    - "model_lookup": query to identify the exact model/variant/SKU
+    - "model_lookup": query to identify the exact model/variant/SKU — MUST include the model number if one is detected
     - "price_comparison": query to compare prices across sellers
 - confidence: "low"|"medium"|"high"
 - needsMoreContext: true only if brand and model cannot be determined at all
@@ -243,14 +244,64 @@ Use language ` + language + ` for objectName and description.`
 	if evidence == nil || evidence.Empty() {
 		return base
 	}
+	modelNumbers := extractModelNumbers(evidence)
+	modelNumberHint := ""
+	if len(modelNumbers) > 0 {
+		modelNumberHint = "\n\n⚠️  DETECTED MODEL NUMBER(S) in OCR text: " + strings.Join(modelNumbers, ", ") + `
+These look like product model numbers or SKUs. If they match the product in the image:
+- Use the model number directly in searchQuery (e.g. "<Brand> ` + strings.Join(modelNumbers[:1], "") + `")
+- Include it in the "model_lookup" entry of searchQueries
+- Do NOT ignore them in favour of a generic description`
+	}
 	compact, err := json.Marshal(evidence)
 	if err != nil {
-		return base
+		return base + modelNumberHint
 	}
-	return base + `
+	return base + modelNumberHint + `
 
 Google Cloud Vision evidence below — treat OCR, logo, and webEntities as strong signals; labels as weak signals. Use them to sharpen the product identification, not to override your visual analysis.
 Evidence JSON: ` + string(compact)
+}
+
+// extractModelNumbers returns OCR strings that look like product model numbers
+// (alphanumeric, 3–25 characters, contains both letters and digits).
+func extractModelNumbers(evidence *model.VisualEvidence) []string {
+	if evidence == nil {
+		return nil
+	}
+	var out []string
+	seen := make(map[string]struct{})
+	for _, item := range evidence.OCR {
+		text := strings.TrimSpace(item.Text)
+		if !likelyModelNumber(text) {
+			continue
+		}
+		key := strings.ToLower(text)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, text)
+	}
+	return out
+}
+
+// likelyModelNumber returns true when s looks like a product model number:
+// 3–25 chars, contains both letters and digits.
+func likelyModelNumber(s string) bool {
+	if len(s) < 3 || len(s) > 25 {
+		return false
+	}
+	hasLetter, hasDigit := false, false
+	for _, r := range s {
+		switch {
+		case (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z'):
+			hasLetter = true
+		case r >= '0' && r <= '9':
+			hasDigit = true
+		}
+	}
+	return hasLetter && hasDigit
 }
 
 func summarizePrompt(language string, object model.RecognizedObject, results string) string {
@@ -270,7 +321,7 @@ func hypothesisPrompt(language string, evidence *model.VisualEvidence) string {
 Return ONLY valid JSON (no markdown) with these fields:
 - objectName: brand + model name if possible (e.g. "Nike Air Max 270")
 - description: one-line description in language ` + language + `
-- searchQuery: a web search query that would find the official product page — prioritize brand + model number over visual descriptions like color or shape
+- searchQuery: a web search query that would find the official product page — if a model number is detected (see below), use "<Brand> <ModelNumber>" as the query
 - confidence: "low"|"medium"|"high"
 - needsMoreContext: true if product cannot be identified
 
@@ -278,11 +329,16 @@ Use language ` + language + `.`
 	if evidence == nil || evidence.Empty() {
 		return base
 	}
+	modelNumbers := extractModelNumbers(evidence)
+	modelNumberHint := ""
+	if len(modelNumbers) > 0 {
+		modelNumberHint = "\n\n⚠️  DETECTED MODEL NUMBER(S) in OCR: " + strings.Join(modelNumbers, ", ") + " — prioritize these in searchQuery."
+	}
 	compact, err := json.Marshal(evidence)
 	if err != nil {
-		return base
+		return base + modelNumberHint
 	}
-	return base + `
+	return base + modelNumberHint + `
 
 Cloud Vision signals (treat as supporting evidence — OCR/logo/webEntities are strongest):
 ` + string(compact)
