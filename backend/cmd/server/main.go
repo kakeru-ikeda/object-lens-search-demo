@@ -105,7 +105,7 @@ func buildLLM(ctx context.Context, cfg config.Config, logger *slog.Logger) (llm.
 		}
 		return nil, "", err
 	}
-	return bedrockllm.New(bedrockruntime.NewFromConfig(awsCfg), cfg.BedrockModelID), "bedrock", nil
+	return bedrockllm.NewWithLightModel(bedrockruntime.NewFromConfig(awsCfg), cfg.BedrockModelID, cfg.BedrockLightModelID), "bedrock", nil
 }
 
 func buildSearcher(cfg config.Config, logger *slog.Logger) (search.WebSearcher, string, error) {

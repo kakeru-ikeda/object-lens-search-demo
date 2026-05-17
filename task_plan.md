@@ -159,3 +159,27 @@ Known tool constraints:
 - Backend Cloud Run deployment verified at `<cloud-run-service-url>/api/healthz`.
 - Frontend GitHub Pages deployment verified at `https://kakeru-ikeda.github.io/object-lens-search-demo/`.
 - Frontend deploy dirty-tree guard changed to opt-in (`REQUIRE_CLEAN_TREE=true`) because only `frontend/dist` is pushed to `gh-pages` via a temporary git repository.
+
+
+## 2026-05-17 Progressive Parallel SSE Search
+
+Goal: implement progressive search UX where the modal opens immediately, Cloud Vision evidence, Bedrock Haiku hypotheses, speculative Tavily searches, and final Bedrock conclusion stream through SSE as independently completed stages.
+
+Phases:
+1. [complete] Extend backend LLM/usecase contracts for Bedrock Haiku interim hypotheses and rich SSE payloads.
+2. [complete] Add bounded speculative searches from approved query sources and dedupe aggregate results.
+3. [complete] Extend frontend stream state and modal result panel for partial service cards before final data.
+4. [complete] Add/update backend and frontend tests.
+5. [complete] Verify Go tests/build/vet, frontend typecheck/build, streaming behavior, and implementation review.
+
+Decisions:
+- Lightweight interim LLM uses Bedrock model `global.anthropic.claude-haiku-4-5-20251001-v1:0` via `BEDROCK_LIGHT_MODEL_ID`.
+- Interim LLM output is displayed as an unverified hypothesis, never as final answer.
+- Speculative Tavily searches are bounded to approved query sources and final conclusion uses an adopted snapshot so late partial events cannot overwrite final.
+
+Verification:
+- `cd backend && go test ./... && go build ./cmd/server && go vet ./...` passed.
+- `cd backend && go test -race ./internal/usecase ./internal/handler` passed.
+- Frontend LSP diagnostics passed for modified TS/TSX files.
+- `cd frontend && npm run typecheck && npm run build` passed.
+- Local mock SSE returned progressive `llm_hypothesis_completed`, `query_generated`, `search_results`, and `final` events, with duplicate primary/speculative search-start removed.

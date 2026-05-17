@@ -26,6 +26,7 @@ type Config struct {
 	CloudVisionProvider  string
 	AWSRegion            string
 	BedrockModelID       string
+	BedrockLightModelID  string
 	TavilyAPIKey         string
 	TavilyEndpoint       string
 	AllowMockFallback    bool
@@ -52,6 +53,7 @@ func Load() (Config, error) {
 		CloudVisionProvider:  strings.ToLower(getEnv("CLOUD_VISION_PROVIDER", "cloudvision")),
 		AWSRegion:            getEnv("AWS_REGION", ""),
 		BedrockModelID:       getEnv("BEDROCK_MODEL_ID", ""),
+		BedrockLightModelID:  getEnv("BEDROCK_LIGHT_MODEL_ID", "global.anthropic.claude-haiku-4-5-20251001-v1:0"),
 		TavilyAPIKey:         getEnv("TAVILY_API_KEY", ""),
 		TavilyEndpoint:       getEnv("TAVILY_ENDPOINT", "https://api.tavily.com/search"),
 	}

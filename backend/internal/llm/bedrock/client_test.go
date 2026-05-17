@@ -1,10 +1,29 @@
 package bedrock
 
 import (
+	"context"
+	"encoding/json"
 	"testing"
+
+	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 
 	"object-lens-search-demo/backend/internal/model"
 )
+
+type captureRuntime struct {
+	modelIDs []string
+}
+
+func (r *captureRuntime) InvokeModel(ctx context.Context, params *bedrockruntime.InvokeModelInput, optFns ...func(*bedrockruntime.Options)) (*bedrockruntime.InvokeModelOutput, error) {
+	if params.ModelId != nil {
+		r.modelIDs = append(r.modelIDs, *params.ModelId)
+	}
+	body, _ := json.Marshal(anthropicResponse{Content: []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}{{Type: "text", Text: `{"objectName":"sample","description":"sample","searchQuery":"sample query","confidence":"low","needsMoreContext":false}`}}})
+	return &bedrockruntime.InvokeModelOutput{Body: body}, nil
+}
 
 func TestCompactSearchResultsDropsRawPayload(t *testing.T) {
 	results := []model.NormalizedSearchResult{{
@@ -28,5 +47,20 @@ func TestCompactSearchResultsDropsRawPayload(t *testing.T) {
 	}
 	if got.Rank != results[0].Rank || got.Score != results[0].Score || got.ContentType != results[0].ContentType {
 		t.Fatalf("compact result lost ranking fields: %#v", got)
+	}
+}
+
+func TestHypothesizeObjectUsesConfiguredLightModel(t *testing.T) {
+	runtime := &captureRuntime{}
+	client := NewWithLightModel(runtime, "main-model", "light-model")
+	resp, err := client.HypothesizeObject(context.Background(), model.HypothesizeObjectRequest{ImageDataURL: "data:image/jpeg;base64,aW1hZ2U=", Language: "en"})
+	if err != nil {
+		t.Fatalf("unexpected hypothesis error: %v", err)
+	}
+	if resp.Model != "light-model" || resp.Object.SearchQuery != "sample query" {
+		t.Fatalf("unexpected hypothesis response: %#v", resp)
+	}
+	if len(runtime.modelIDs) != 1 || runtime.modelIDs[0] != "light-model" {
+		t.Fatalf("expected light model invocation, got %#v", runtime.modelIDs)
 	}
 }

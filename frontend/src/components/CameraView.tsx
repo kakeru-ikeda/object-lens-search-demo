@@ -14,7 +14,7 @@ interface CapturedImage extends ImageInput {
 
 export function CameraView() {
   const { stream, error: cameraError, videoRef } = useCamera();
-  const { loading, error: searchError, data, events, startStream, clearData } = useRecognizeSearchStream();
+  const { loading, error: searchError, data, partialData, events, startStream, clearData } = useRecognizeSearchStream();
   const [captureRect, setCaptureRect] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
   const [images, setImages] = useState<CapturedImage[]>([]);
 
@@ -81,8 +81,6 @@ export function CameraView() {
       </div>
 
       <div className="absolute bottom-0 inset-x-0 flex flex-col items-center gap-2 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-3 bg-gradient-to-t from-black/85 via-black/55 to-transparent">
-        {searchError && <div className="px-4 py-2 bg-red-500 text-white rounded-lg text-sm max-w-xs text-center">{searchError.message}</div>}
-
         <div className="text-xs text-white/80 bg-black/40 rounded-full px-3 py-1">
           {images.length}/5 images captured {images.length > 1 ? '· coverage increased' : ''}
         </div>
@@ -109,7 +107,7 @@ export function CameraView() {
         </div>
       </div>
 
-      {data && (
+      {(data || partialData || searchError || loading) && (
         <div className="absolute inset-0 z-50 flex items-end bg-black/60 backdrop-blur-sm transition-opacity" role="dialog" aria-modal="true" aria-label="検索結果">
           <button
             type="button"
@@ -119,7 +117,7 @@ export function CameraView() {
           >
             <X className="w-5 h-5" />
           </button>
-          <ResultPanel data={data} onClose={reset} />
+          <ResultPanel data={data} partialData={partialData} loading={loading} error={searchError} onClose={reset} />
         </div>
       )}
     </div>

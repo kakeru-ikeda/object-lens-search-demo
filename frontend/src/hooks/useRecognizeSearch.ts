@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from 'react';
 import { recognizeAndSearch, recognizeAndSearchStream } from '../lib/apiClient';
-import { ImageCrops, ImageInput, RecognizeSearchResponse, StreamProgressEvent } from '../types';
+import { ImageCrops, ImageInput, RecognizeSearchResponse, StreamProgressEvent, NormalizedSearchResult } from '../types';
 
 export function useRecognizeSearch() {
   const [loading, setLoading] = useState(false);
@@ -38,10 +38,17 @@ export function useRecognizeSearch() {
 }
 
 
+export interface PartialData {
+  hypothesis?: string;
+  query?: string;
+  searchResults?: NormalizedSearchResult[];
+}
+
 export function useRecognizeSearchStream() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
   const [data, setData] = useState<RecognizeSearchResponse | null>(null);
+  const [partialData, setPartialData] = useState<PartialData | null>(null);
   const [events, setEvents] = useState<StreamProgressEvent[]>([]);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -53,6 +60,7 @@ export function useRecognizeSearchStream() {
     setLoading(true);
     setError(null);
     setData(null);
+    setPartialData({});
     setEvents([]);
     try {
       const result = await recognizeAndSearchStream(
@@ -70,6 +78,16 @@ export function useRecognizeSearchStream() {
               }
               return [...current, event];
             });
+            
+            if (event.payload) {
+              setPartialData((current) => ({
+                ...current,
+                ...(event.payload?.hypothesis ? { hypothesis: event.payload.hypothesis } : {}),
+                ...(event.payload?.query ? { query: event.payload.query } : {}),
+                ...(event.payload?.searchResults ? { searchResults: mergeSearchResults(current?.searchResults ?? [], event.payload.searchResults) } : {}),
+              }));
+            }
+
             if (event.stage === 'final' && event.payload?.response) {
               setData(event.payload.response);
             }
@@ -100,9 +118,32 @@ export function useRecognizeSearchStream() {
   const clearData = useCallback(() => {
     abort();
     setData(null);
+    setPartialData(null);
     setError(null);
     setEvents([]);
   }, [abort]);
 
-  return { loading, error, data, events, startStream, abort, clearData };
+  return { loading, error, data, partialData, events, startStream, abort, clearData };
+}
+
+function mergeSearchResults(current: NormalizedSearchResult[], incoming: NormalizedSearchResult[]) {
+  const merged: NormalizedSearchResult[] = [];
+  const seen = new Set<string>();
+  for (const result of [...current, ...incoming]) {
+    const key = searchResultIdentity(result);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    merged.push(result);
+  }
+  return merged;
+}
+
+function searchResultIdentity(result: NormalizedSearchResult) {
+  const url = result.url.trim().toLowerCase();
+  if (url) {
+    return url;
+  }
+  return `${result.id}:${result.title}:${result.snippet}`.trim().toLowerCase();
 }

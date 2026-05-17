@@ -45,6 +45,8 @@ type EventSink interface {
 type StreamEvent struct {
 	RequestID string                 `json:"requestId"`
 	Sequence  int                    `json:"sequence"`
+	Revision  int                    `json:"revision"`
+	Source    string                 `json:"source"`
 	Stage     string                 `json:"stage"`
 	Status    string                 `json:"status"`
 	ElapsedMs int64                  `json:"elapsedMs"`
@@ -73,10 +75,17 @@ func newEventEmitter(requestID string, start time.Time, sink EventSink) *eventEm
 }
 
 func (e *eventEmitter) emit(ctx context.Context, stage string, status string, imageID string, message string, payload map[string]interface{}) error {
+	return e.emitFrom(ctx, "backend", stage, status, imageID, message, payload)
+}
+
+func (e *eventEmitter) emitFrom(ctx context.Context, source string, stage string, status string, imageID string, message string, payload map[string]interface{}) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.sequence++
-	return e.sink.Emit(ctx, StreamEvent{RequestID: e.requestID, Sequence: e.sequence, Stage: stage, Status: status, ElapsedMs: time.Since(e.start).Milliseconds(), ImageID: imageID, Message: message, Payload: payload})
+	if source == "" {
+		source = "backend"
+	}
+	return e.sink.Emit(ctx, StreamEvent{RequestID: e.requestID, Sequence: e.sequence, Revision: e.sequence, Source: source, Stage: stage, Status: status, ElapsedMs: time.Since(e.start).Milliseconds(), ImageID: imageID, Message: message, Payload: payload})
 }
 
 func (u *RecognizeSearchUsecase) Execute(ctx context.Context, req ExecuteRequest) (*model.RecognizeSearchResponse, error) {
@@ -97,50 +106,142 @@ func (u *RecognizeSearchUsecase) execute(ctx context.Context, req ExecuteRequest
 	workCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	evidenceCh := make(chan evidenceResult, 1)
+	hypothesisCh := make(chan hypothesisResult, 1)
+	recognitionCh := make(chan recognitionResult, 1)
+	speculative := newSpeculativeSearches(u.Searcher, req.Request.Language, req.Request.Options.MaxSearchResults, emitter, u.Logger)
+	defer speculative.cancel()
 
 	go func() {
 		_ = emitter.emit(workCtx, "vision_started", "started", "", "Visual evidence extraction started", nil)
 		stageStart := time.Now()
 		evidence, status := u.extractEvidence(workCtx, req)
 		elapsed := time.Since(stageStart).Milliseconds()
-		_ = emitter.emit(workCtx, "vision_completed", "completed", primaryImageID(req.Request), "Visual evidence extraction completed", map[string]interface{}{"status": status, "elapsedMs": elapsed})
 		evidenceCh <- evidenceResult{evidence: evidence, status: status, elapsedMs: elapsed}
+	}()
+	go func() {
+		_ = emitter.emitFrom(workCtx, "bedrock_light", "llm_hypothesis_started", "started", "", "Interim hypothesis started", map[string]interface{}{"maxQuerySources": maxSpeculativeQuerySources})
+		stageStart := time.Now()
+		resp, err := u.hypothesize(workCtx, req, nil)
+		hypothesisCh <- hypothesisResult{resp: resp, err: err, elapsedMs: time.Since(stageStart).Milliseconds()}
 	}()
 
 	if err := emitter.emit(ctx, "recognition_started", "started", "", "Integrated recognition started", nil); err != nil {
 		return nil, err
 	}
-	stageStart := time.Now()
-	recognized, err := u.LLM.RecognizeObject(workCtx, model.RecognizeObjectRequest{ImageDataURL: req.Request.ImageBase64, Crops: req.Request.Crops, Images: recognizeImages(req), MIMEType: req.MIMEType, CropMIMETypes: req.CropMIMETypes, Language: req.Request.Language})
-	stageLatency.RecognizeMs = time.Since(stageStart).Milliseconds()
-	if err != nil {
-		cancel()
-		<-evidenceCh
-		return nil, fmt.Errorf("%w: recognize object: %v", ErrLLM, err)
-	}
-	if err := emitter.emit(ctx, "recognition_completed", "completed", "", "Recognition completed", map[string]interface{}{"objectName": recognized.Object.ObjectName, "searchQuery": recognized.Object.SearchQuery}); err != nil {
-		return nil, err
-	}
+	go func() {
+		stageStart := time.Now()
+		recognized, err := u.LLM.RecognizeObject(workCtx, model.RecognizeObjectRequest{ImageDataURL: req.Request.ImageBase64, Crops: req.Request.Crops, Images: recognizeImages(req), MIMEType: req.MIMEType, CropMIMETypes: req.CropMIMETypes, Language: req.Request.Language})
+		recognitionCh <- recognitionResult{resp: recognized, err: err, elapsedMs: time.Since(stageStart).Milliseconds()}
+	}()
 
-	evidenceRes := <-evidenceCh
-	evidence := evidenceRes.evidence
-	evidenceStatus := evidenceRes.status
-	stageLatency.CloudVisionMs = evidenceRes.elapsedMs
+	var recognized *model.RecognizeObjectResponse
+	var evidence *model.VisualEvidence
+	var evidenceStatus string
+	for pending := 3; pending > 0; pending-- {
+		select {
+		case res := <-hypothesisCh:
+			if res.err != nil {
+				if u.Logger != nil {
+					u.Logger.Warn("interim hypothesis failed", "error", res.err)
+				}
+				if err := emitter.emitFrom(ctx, "bedrock_light", "llm_hypothesis_completed", "warning", "", "Interim hypothesis unavailable", map[string]interface{}{"error": res.err.Error(), "elapsedMs": res.elapsedMs}); err != nil {
+					return nil, err
+				}
+				continue
+			}
+			if err := emitter.emitFrom(ctx, "bedrock_light", "llm_hypothesis_completed", "completed", "", "Interim hypothesis completed", map[string]interface{}{"model": res.resp.Model, "objectName": res.resp.Object.ObjectName, "description": res.resp.Object.Description, "searchQuery": res.resp.Object.SearchQuery, "query": res.resp.Object.SearchQuery, "hypothesis": interimHypothesisText(res.resp.Object), "confidence": res.resp.Object.Confidence, "elapsedMs": res.elapsedMs}); err != nil {
+				return nil, err
+			}
+			if err := emitter.emitFrom(ctx, "bedrock_light", "query_generated", "completed", "", "Interim query generated", map[string]interface{}{"source": "raw_llm_hypothesis_query", "query": res.resp.Object.SearchQuery, "confidence": res.resp.Object.Confidence}); err != nil {
+				return nil, err
+			}
+			speculative.Start(ctx, "raw_llm_hypothesis_query", res.resp.Object.SearchQuery)
+		case res := <-evidenceCh:
+			evidence = res.evidence
+			evidenceStatus = res.status
+			stageLatency.CloudVisionMs = res.elapsedMs
+			payload := map[string]interface{}{"status": res.status, "elapsedMs": res.elapsedMs}
+			if res.evidence != nil && !res.evidence.Empty() {
+				payload["evidenceTypes"] = res.evidence.EvidenceTypes()
+			}
+			if err := emitter.emitFrom(ctx, "cloud_vision", "vision_completed", "completed", primaryImageID(req.Request), "Visual evidence extraction completed", payload); err != nil {
+				return nil, err
+			}
+			for _, source := range evidenceQuerySources(res.evidence) {
+				if err := emitter.emitFrom(ctx, "cloud_vision", "query_generated", "completed", "", "Vision query generated", map[string]interface{}{"source": source.source, "query": source.query, "confidence": source.confidence}); err != nil {
+					return nil, err
+				}
+				speculative.Start(ctx, source.source, source.query)
+			}
+		case res := <-recognitionCh:
+			stageLatency.RecognizeMs = res.elapsedMs
+			if res.err != nil {
+				cancel()
+				return nil, fmt.Errorf("%w: recognize object: %v", ErrLLM, res.err)
+			}
+			recognized = res.resp
+			if err := emitter.emit(ctx, "recognition_completed", "completed", "", "Recognition completed", map[string]interface{}{"objectName": recognized.Object.ObjectName, "searchQuery": recognized.Object.SearchQuery, "elapsedMs": res.elapsedMs}); err != nil {
+				return nil, err
+			}
+		case <-ctx.Done():
+			cancel()
+			return nil, ctx.Err()
+		}
+	}
+	if recognized == nil {
+		cancel()
+		return nil, fmt.Errorf("%w: recognize object: empty response", ErrLLM)
+	}
 	if evidence != nil && !evidence.Empty() {
 		recognized.Object.VisualEvidence = evidence
 		recognized.Object.SearchQuery = enrichSearchQuery(recognized.Object.SearchQuery, evidence)
 	}
-
-	if err := emitter.emit(ctx, "search_started", "started", "", "Web search started", map[string]interface{}{"query": recognized.Object.SearchQuery}); err != nil {
+	if err := emitter.emitFrom(ctx, "bedrock", "query_generated", "completed", "", "Recognition query generated", map[string]interface{}{"source": "merged_evidence_query", "query": recognized.Object.SearchQuery, "confidence": recognized.Object.Confidence}); err != nil {
 		return nil, err
 	}
-	stageStart = time.Now()
-	searchResp, err := u.Searcher.Search(ctx, model.SearchRequest{Query: recognized.Object.SearchQuery, Language: req.Request.Language, MaxResults: req.Request.Options.MaxSearchResults})
-	stageLatency.SearchMs = time.Since(stageStart).Milliseconds()
-	if err != nil {
-		return nil, fmt.Errorf("%w: search: %v", ErrSearch, err)
+	adoptedQuerySources := append(speculative.Sources(), "merged_evidence_query")
+
+	stageStart := time.Now()
+	var searchResp *model.SearchResponse
+	var specResults []model.NormalizedSearchResult
+	if speculative.HasQuery(recognized.Object.SearchQuery) {
+		specResults = speculative.Wait()
+		matching := speculative.ResultsFor(recognized.Object.SearchQuery)
+		if len(matching) > 0 {
+			searchResp = &model.SearchResponse{Provider: u.SearchProvider, Query: recognized.Object.SearchQuery, Results: matching}
+		}
 	}
-	if err := emitter.emit(ctx, "search_completed", "completed", "", "Web search completed", map[string]interface{}{"resultCount": len(searchResp.Results), "query": searchResp.Query}); err != nil {
+	if searchResp == nil {
+		if err := emitter.emit(ctx, "search_started", "started", "", "Web search started", map[string]interface{}{"query": recognized.Object.SearchQuery, "adoptedQuerySources": adoptedQuerySources}); err != nil {
+			return nil, err
+		}
+		var err error
+		searchResp, err = u.Searcher.Search(ctx, model.SearchRequest{Query: recognized.Object.SearchQuery, Language: req.Request.Language, MaxResults: req.Request.Options.MaxSearchResults})
+		if err != nil {
+			if u.Logger != nil {
+				u.Logger.Warn("primary web search failed; continuing with degraded final response", "query", recognized.Object.SearchQuery, "error", err)
+			}
+			searchResp = &model.SearchResponse{Provider: u.SearchProvider, Query: recognized.Object.SearchQuery, Results: nil}
+			if err := emitter.emit(ctx, "search_completed", "warning", "", "Web search failed; continuing with visual and LLM evidence", map[string]interface{}{"code": "search_error", "query": recognized.Object.SearchQuery, "error": err.Error(), "searchStatus": "degraded", "adoptedQuerySources": adoptedQuerySources}); err != nil {
+				return nil, err
+			}
+		}
+	}
+	stageLatency.SearchMs = time.Since(stageStart).Milliseconds()
+	if specResults == nil {
+		specResults = speculative.Wait()
+	}
+	adoptedResults := mergeSearchResults(searchResp.Results, specResults)
+	searchStatus := "ok"
+	searchEventStatus := "completed"
+	if len(adoptedResults) == 0 {
+		searchStatus = "degraded"
+		searchEventStatus = "warning"
+	}
+	if err := emitter.emit(ctx, "search_results", searchEventStatus, "", "Search results available", map[string]interface{}{"searchResults": adoptedResults, "resultCount": len(adoptedResults), "primaryResultCount": len(searchResp.Results), "speculativeResultCount": len(specResults), "query": searchResp.Query, "searchStatus": searchStatus, "adoptedQuerySources": adoptedQuerySources}); err != nil {
+		return nil, err
+	}
+	if err := emitter.emit(ctx, "search_completed", searchEventStatus, "", "Web search completed", map[string]interface{}{"searchResults": adoptedResults, "resultCount": len(adoptedResults), "primaryResultCount": len(searchResp.Results), "speculativeResultCount": len(specResults), "query": searchResp.Query, "searchStatus": searchStatus, "adoptedQuerySources": adoptedQuerySources}); err != nil {
 		return nil, err
 	}
 
@@ -148,7 +249,7 @@ func (u *RecognizeSearchUsecase) execute(ctx context.Context, req ExecuteRequest
 		return nil, err
 	}
 	stageStart = time.Now()
-	summary, err := u.LLM.SummarizeSearchResults(ctx, model.SummarizeSearchResultsRequest{Language: req.Request.Language, RecognizedObject: recognized.Object, Results: searchResp.Results})
+	summary, err := u.LLM.SummarizeSearchResults(ctx, model.SummarizeSearchResultsRequest{Language: req.Request.Language, RecognizedObject: recognized.Object, Results: adoptedResults})
 	stageLatency.SummarizeMs = time.Since(stageStart).Milliseconds()
 	if err != nil {
 		return nil, fmt.Errorf("%w: summarize search results: %v", ErrLLM, err)
@@ -165,7 +266,7 @@ func (u *RecognizeSearchUsecase) execute(ctx context.Context, req ExecuteRequest
 		Search: model.SearchSection{
 			Provider: searchResp.Provider,
 			Query:    searchResp.Query,
-			Results:  searchResp.Results,
+			Results:  adoptedResults,
 		},
 		Summary:        model.Summary{Text: summary.Text, LLMProvider: u.LLMProvider, Model: summary.Model},
 		Meta:           model.Meta{LLMProvider: u.LLMProvider, SearchProvider: u.SearchProvider, CloudVisionProvider: u.cloudVisionProvider(), ElapsedMs: time.Since(start).Milliseconds(), StageLatency: stageLatency},
@@ -278,6 +379,241 @@ type evidenceResult struct {
 	evidence  *model.VisualEvidence
 	status    string
 	elapsedMs int64
+}
+
+type hypothesisResult struct {
+	resp      *model.HypothesizeObjectResponse
+	err       error
+	elapsedMs int64
+}
+
+type recognitionResult struct {
+	resp      *model.RecognizeObjectResponse
+	err       error
+	elapsedMs int64
+}
+
+const maxSpeculativeQuerySources = 3
+
+type speculativeSearches struct {
+	searcher   search.WebSearcher
+	language   string
+	maxResults int
+	emitter    *eventEmitter
+	logger     *slog.Logger
+	ctx        context.Context
+	cancel     context.CancelFunc
+	mu         sync.Mutex
+	sources    []string
+	queries    map[string]struct{}
+	results    []speculativeSearchResult
+	wg         sync.WaitGroup
+}
+
+type speculativeSearchResult struct {
+	query   string
+	results []model.NormalizedSearchResult
+}
+
+func newSpeculativeSearches(searcher search.WebSearcher, language string, maxResults int, emitter *eventEmitter, logger *slog.Logger) *speculativeSearches {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &speculativeSearches{searcher: searcher, language: language, maxResults: maxResults, emitter: emitter, logger: logger, ctx: ctx, cancel: cancel, queries: make(map[string]struct{})}
+}
+
+func (s *speculativeSearches) Start(parent context.Context, source string, query string) {
+	query = strings.TrimSpace(query)
+	if s == nil || s.searcher == nil || query == "" {
+		return
+	}
+	s.mu.Lock()
+	if len(s.sources) >= maxSpeculativeQuerySources {
+		s.mu.Unlock()
+		return
+	}
+	key := strings.ToLower(query)
+	if _, exists := s.queries[key]; exists {
+		s.mu.Unlock()
+		return
+	}
+	s.queries[key] = struct{}{}
+	s.sources = append(s.sources, source)
+	s.mu.Unlock()
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		ctx, cancel := context.WithCancel(parent)
+		defer cancel()
+		go func() {
+			select {
+			case <-s.ctx.Done():
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+		_ = s.emitter.emitFrom(parent, "speculative_search", "search_started", "started", "", "Speculative web search started", map[string]interface{}{"source": source, "query": query, "speculative": true})
+		resp, err := s.searcher.Search(ctx, model.SearchRequest{Query: query, Language: s.language, MaxResults: s.maxResults})
+		if err != nil {
+			if s.logger != nil {
+				s.logger.Warn("speculative search failed", "source", source, "query", query, "error", err)
+			}
+			_ = s.emitter.emitFrom(parent, "speculative_search", "search_completed", "warning", "", "Speculative web search failed", map[string]interface{}{"source": source, "query": query, "error": err.Error(), "speculative": true})
+			return
+		}
+		_ = s.emitter.emitFrom(parent, "speculative_search", "search_results", "completed", "", "Speculative search results available", map[string]interface{}{"source": source, "query": resp.Query, "resultCount": len(resp.Results), "searchResults": resp.Results, "speculative": true})
+		s.mu.Lock()
+		s.results = append(s.results, speculativeSearchResult{query: resp.Query, results: resp.Results})
+		s.mu.Unlock()
+	}()
+}
+
+func (s *speculativeSearches) HasQuery(query string) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, exists := s.queries[strings.ToLower(strings.TrimSpace(query))]
+	return exists
+}
+
+func (s *speculativeSearches) Wait() []model.NormalizedSearchResult {
+	if s == nil {
+		return nil
+	}
+	s.wg.Wait()
+	s.cancel()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]model.NormalizedSearchResult, 0)
+	for _, result := range s.results {
+		out = append(out, result.results...)
+	}
+	return out
+}
+
+func (s *speculativeSearches) ResultsFor(query string) []model.NormalizedSearchResult {
+	if s == nil {
+		return nil
+	}
+	query = strings.ToLower(strings.TrimSpace(query))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, result := range s.results {
+		if strings.ToLower(strings.TrimSpace(result.query)) == query {
+			out := make([]model.NormalizedSearchResult, len(result.results))
+			copy(out, result.results)
+			return out
+		}
+	}
+	return nil
+}
+
+func (s *speculativeSearches) Sources() []string {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, len(s.sources))
+	copy(out, s.sources)
+	return out
+}
+
+func (u *RecognizeSearchUsecase) hypothesize(ctx context.Context, req ExecuteRequest, evidence *model.VisualEvidence) (*model.HypothesizeObjectResponse, error) {
+	hypothesisLLM, ok := u.LLM.(llm.HypothesisLLM)
+	if !ok {
+		return nil, errors.New("interim hypothesis unsupported")
+	}
+	return hypothesisLLM.HypothesizeObject(ctx, model.HypothesizeObjectRequest{ImageDataURL: req.Request.ImageBase64, Crops: req.Request.Crops, Images: recognizeImages(req), MIMEType: req.MIMEType, CropMIMETypes: req.CropMIMETypes, Language: req.Request.Language, VisualEvidence: evidence})
+}
+
+type querySource struct {
+	source     string
+	query      string
+	confidence string
+}
+
+func evidenceQuerySources(evidence *model.VisualEvidence) []querySource {
+	if evidence == nil || evidence.Empty() {
+		return nil
+	}
+	queries := make([]querySource, 0, 2)
+	for _, logo := range evidence.Logos {
+		queries = appendUniqueQuery(queries, "vision_labels_query", logo.Text, confidenceFromScore(logo.Score))
+	}
+	for _, label := range evidence.BestGuessLabels {
+		queries = appendUniqueQuery(queries, "vision_labels_query", label, "medium")
+	}
+	for _, entity := range evidence.WebEntities {
+		queries = appendUniqueQuery(queries, "vision_labels_query", entity.Text, confidenceFromScore(entity.Score))
+	}
+	for _, ocr := range evidence.OCR {
+		queries = appendUniqueQuery(queries, "vision_ocr_query", ocr.Text, confidenceFromScore(ocr.Score))
+	}
+	if len(queries) > 2 {
+		return queries[:2]
+	}
+	return queries
+}
+
+func appendUniqueQuery(queries []querySource, source string, value string, confidence string) []querySource {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return queries
+	}
+	lower := strings.ToLower(trimmed)
+	for _, query := range queries {
+		if strings.ToLower(query.query) == lower {
+			return queries
+		}
+	}
+	return append(queries, querySource{source: source, query: trimmed, confidence: confidence})
+}
+
+func confidenceFromScore(score float64) string {
+	if score >= 0.85 {
+		return "high"
+	}
+	if score >= 0.5 {
+		return "medium"
+	}
+	return "low"
+}
+
+func interimHypothesisText(object model.RecognizedObject) string {
+	parts := []string{strings.TrimSpace(object.ObjectName)}
+	if desc := strings.TrimSpace(object.Description); desc != "" {
+		parts = append(parts, desc)
+	}
+	return strings.Join(parts, " — ")
+}
+
+func mergeSearchResults(primary []model.NormalizedSearchResult, speculative []model.NormalizedSearchResult) []model.NormalizedSearchResult {
+	merged := make([]model.NormalizedSearchResult, 0, len(primary)+len(speculative))
+	seen := make(map[string]struct{}, len(primary)+len(speculative))
+	for _, result := range primary {
+		seen[searchResultKey(result)] = struct{}{}
+		result.Rank = len(merged) + 1
+		merged = append(merged, result)
+	}
+	for _, result := range speculative {
+		key := searchResultKey(result)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		result.Rank = len(merged) + 1
+		merged = append(merged, result)
+	}
+	return merged
+}
+
+func searchResultKey(result model.NormalizedSearchResult) string {
+	key := strings.ToLower(strings.TrimSpace(result.URL))
+	if key == "" {
+		key = strings.ToLower(strings.TrimSpace(result.Title + "|" + result.Snippet))
+	}
+	return key
 }
 
 func enrichSearchQuery(query string, evidence *model.VisualEvidence) string {
