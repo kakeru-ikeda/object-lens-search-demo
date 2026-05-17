@@ -2,8 +2,10 @@ package usecase
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -110,6 +112,15 @@ func (s slowLLM) SummarizeSearchResults(ctx context.Context, req model.Summarize
 	return (&mock.Client{Model: "slow"}).SummarizeSearchResults(ctx, req)
 }
 
+func (s slowLLM) HypothesizeObject(ctx context.Context, req model.HypothesizeObjectRequest) (*model.HypothesizeObjectResponse, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-time.After(s.delay):
+	}
+	return &model.HypothesizeObjectResponse{Object: model.RecognizedObject{ObjectName: "hypothesis", Description: "hypothesis", SearchQuery: "hypothesis product", Confidence: "low"}, Model: "slow-light"}, nil
+}
+
 func TestExecuteRunsVisionAndRecognitionInParallel(t *testing.T) {
 	uc := &RecognizeSearchUsecase{
 		LLM:            slowLLM{delay: 80 * time.Millisecond},
@@ -132,6 +143,9 @@ func TestExecuteRunsVisionAndRecognitionInParallel(t *testing.T) {
 	}
 	if resp.Search.Query != "sample product Acme" {
 		t.Fatalf("expected evidence-enriched query, got %q", resp.Search.Query)
+	}
+	if len(resp.Search.Results) != 1 {
+		t.Fatalf("expected mock search duplicate URLs to dedupe to one result, got %d", len(resp.Search.Results))
 	}
 	if resp.Meta.StageLatency.CloudVisionMs < 70 || resp.Meta.StageLatency.RecognizeMs < 70 {
 		t.Fatalf("expected both stage latencies recorded, got %#v", resp.Meta.StageLatency)
@@ -248,5 +262,158 @@ func TestExecuteMultiImageMergesEvidenceFromAllImages(t *testing.T) {
 	}
 	if len(resp.ImageAnalyses) != 2 {
 		t.Fatalf("expected per-image analyses, got %#v", resp.ImageAnalyses)
+	}
+}
+
+type recordingSink struct {
+	mu     sync.Mutex
+	events []StreamEvent
+}
+
+func (s *recordingSink) Emit(ctx context.Context, event StreamEvent) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.events = append(s.events, event)
+	return nil
+}
+
+func (s *recordingSink) stages() map[string]StreamEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[string]StreamEvent, len(s.events))
+	for _, event := range s.events {
+		out[event.Stage] = event
+	}
+	return out
+}
+
+func TestExecuteWithEventsEmitsRichPartialPayloads(t *testing.T) {
+	sink := &recordingSink{}
+	uc := &RecognizeSearchUsecase{LLM: &mock.Client{Model: "mock"}, Searcher: &mocksearch.Client{}, Vision: stubVision{evidence: model.VisualEvidence{Logos: []model.EvidenceItem{{Text: "Acme", Score: 0.9}}}}, LLMProvider: "mock", SearchProvider: "mock"}
+	_, err := uc.ExecuteWithEvents(context.Background(), ExecuteRequest{RequestID: "req", Request: model.RecognizeSearchRequest{ImageBase64: "data:image/jpeg;base64,aW1hZ2U=", Language: "en", Options: model.RequestOptions{MaxSearchResults: 1, Stream: true}}, MIMEType: "image/jpeg"}, sink)
+	if err != nil {
+		t.Fatalf("unexpected execute error: %v", err)
+	}
+	stages := sink.stages()
+	for _, stage := range []string{"llm_hypothesis_completed", "vision_completed", "query_generated", "search_results", "search_completed", "final"} {
+		if _, ok := stages[stage]; !ok {
+			t.Fatalf("missing event stage %q from %#v", stage, stages)
+		}
+	}
+	if stages["llm_hypothesis_completed"].Source != "bedrock_light" || stages["llm_hypothesis_completed"].Revision == 0 || stages["llm_hypothesis_completed"].Payload["query"] == "" || stages["llm_hypothesis_completed"].Payload["hypothesis"] == "" {
+		t.Fatalf("hypothesis event missing source/revision/payload: %#v", stages["llm_hypothesis_completed"])
+	}
+	if stages["vision_completed"].Source != "cloud_vision" || stages["vision_completed"].Payload["status"] != "measured" {
+		t.Fatalf("vision event missing source/status: %#v", stages["vision_completed"])
+	}
+	if stages["search_completed"].Payload["speculativeResultCount"] == nil {
+		t.Fatalf("search_completed missing speculative count: %#v", stages["search_completed"].Payload)
+	}
+	if stages["search_results"].Payload["searchResults"] == nil {
+		t.Fatalf("search_results missing partial results: %#v", stages["search_results"].Payload)
+	}
+	if _, err := json.Marshal(stages["final"]); err != nil {
+		t.Fatalf("final event must marshal: %v", err)
+	}
+}
+
+type failingHypothesisLLM struct {
+	base mock.Client
+}
+
+func (f failingHypothesisLLM) RecognizeObject(ctx context.Context, req model.RecognizeObjectRequest) (*model.RecognizeObjectResponse, error) {
+	return f.base.RecognizeObject(ctx, req)
+}
+
+func (f failingHypothesisLLM) SummarizeSearchResults(ctx context.Context, req model.SummarizeSearchResultsRequest) (*model.SummarizeSearchResultsResponse, error) {
+	return f.base.SummarizeSearchResults(ctx, req)
+}
+
+func (f failingHypothesisLLM) HypothesizeObject(ctx context.Context, req model.HypothesizeObjectRequest) (*model.HypothesizeObjectResponse, error) {
+	return nil, errors.New("light model unavailable")
+}
+
+func TestExecuteContinuesWhenLightHypothesisFails(t *testing.T) {
+	sink := &recordingSink{}
+	uc := &RecognizeSearchUsecase{LLM: failingHypothesisLLM{base: mock.Client{Model: "mock"}}, Searcher: &mocksearch.Client{}, LLMProvider: "mock", SearchProvider: "mock"}
+	resp, err := uc.ExecuteWithEvents(context.Background(), ExecuteRequest{RequestID: "req", Request: model.RecognizeSearchRequest{ImageBase64: "data:image/jpeg;base64,aW1hZ2U=", Language: "en", Options: model.RequestOptions{MaxSearchResults: 1}}, MIMEType: "image/jpeg"}, sink)
+	if err != nil {
+		t.Fatalf("expected final flow to succeed despite hypothesis failure: %v", err)
+	}
+	if resp.Search.Query == "" || resp.Summary.Text == "" {
+		t.Fatalf("expected complete response: %#v", resp)
+	}
+	stage := sink.stages()["llm_hypothesis_completed"]
+	if stage.Status != "warning" {
+		t.Fatalf("expected warning hypothesis event, got %#v", stage)
+	}
+}
+
+type uniqueSearchClient struct {
+	mu      sync.Mutex
+	queries []string
+}
+
+func (c *uniqueSearchClient) Search(ctx context.Context, req model.SearchRequest) (*model.SearchResponse, error) {
+	c.mu.Lock()
+	c.queries = append(c.queries, req.Query)
+	c.mu.Unlock()
+	return &model.SearchResponse{Provider: "tavily", Query: req.Query, Results: []model.NormalizedSearchResult{{ID: "id-" + strings.ReplaceAll(req.Query, " ", "-"), Title: req.Query, URL: "https://example.com/" + strings.ReplaceAll(req.Query, " ", "-"), DisplayURL: "example.com", Snippet: "snippet", Source: "example.com", Language: req.Language, Rank: 1, Score: 1, ContentType: "web_page", Provider: "tavily"}}}, nil
+}
+
+type failingSearchClient struct{}
+
+func (f failingSearchClient) Search(ctx context.Context, req model.SearchRequest) (*model.SearchResponse, error) {
+	return nil, errors.New("tavily unavailable")
+}
+
+func TestExecuteReturnsDegradedFinalWhenSearchFails(t *testing.T) {
+	sink := &recordingSink{}
+	uc := &RecognizeSearchUsecase{LLM: failingHypothesisLLM{base: mock.Client{Model: "mock"}}, Searcher: failingSearchClient{}, LLMProvider: "mock", SearchProvider: "tavily"}
+	resp, err := uc.ExecuteWithEvents(context.Background(), ExecuteRequest{RequestID: "req", Request: model.RecognizeSearchRequest{ImageBase64: "data:image/jpeg;base64,aW1hZ2U=", Language: "en", Options: model.RequestOptions{MaxSearchResults: 1, Stream: true}}, MIMEType: "image/jpeg"}, sink)
+	if err != nil {
+		t.Fatalf("expected degraded final response instead of fatal search error: %v", err)
+	}
+	if resp.Search.Query == "" {
+		t.Fatalf("expected final response to keep search query: %#v", resp.Search)
+	}
+	if len(resp.Search.Results) != 0 {
+		t.Fatalf("expected no search results in degraded response, got %#v", resp.Search.Results)
+	}
+	stages := sink.stages()
+	if stages["final"].Stage != "final" {
+		t.Fatalf("expected final event after search failure, got stages %#v", stages)
+	}
+	searchCompleted := stages["search_completed"]
+	if searchCompleted.Status != "warning" || searchCompleted.Payload["searchStatus"] != "degraded" {
+		t.Fatalf("expected degraded search warning event, got %#v", searchCompleted)
+	}
+}
+
+func TestSpeculativeSearchSourcesAreBounded(t *testing.T) {
+	searcher := &uniqueSearchClient{}
+	uc := &RecognizeSearchUsecase{LLM: &mock.Client{Model: "mock"}, Searcher: searcher, Vision: stubVision{evidence: model.VisualEvidence{Logos: []model.EvidenceItem{{Text: "Logo"}}, BestGuessLabels: []string{"Guess"}, WebEntities: []model.EvidenceItem{{Text: "Entity"}}, OCR: []model.EvidenceItem{{Text: "Text"}}}}, LLMProvider: "mock", SearchProvider: "mock"}
+	resp, err := uc.Execute(context.Background(), ExecuteRequest{RequestID: "req", Request: model.RecognizeSearchRequest{ImageBase64: "data:image/jpeg;base64,aW1hZ2U=", Language: "en", Options: model.RequestOptions{MaxSearchResults: 1}}, MIMEType: "image/jpeg"})
+	if err != nil {
+		t.Fatalf("unexpected execute error: %v", err)
+	}
+	searcher.mu.Lock()
+	queryCount := len(searcher.queries)
+	queries := append([]string(nil), searcher.queries...)
+	searcher.mu.Unlock()
+	if queryCount > maxSpeculativeQuerySources+1 {
+		t.Fatalf("expected at most %d speculative plus primary searches, got %d", maxSpeculativeQuerySources, queryCount)
+	}
+	seen := make(map[string]int, len(queries))
+	for _, query := range queries {
+		seen[query]++
+	}
+	for query, count := range seen {
+		if count > 1 {
+			t.Fatalf("query %q was searched %d times; primary query must not duplicate speculative search list %#v", query, count, queries)
+		}
+	}
+	if len(resp.Search.Results) != queryCount {
+		t.Fatalf("expected adopted deduped results for all successful searches, got results=%d queries=%d", len(resp.Search.Results), queryCount)
 	}
 }
