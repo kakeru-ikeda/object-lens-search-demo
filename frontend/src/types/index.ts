@@ -125,9 +125,13 @@ export type StreamStage =
   | 'request_received'
   | 'vision_started'
   | 'vision_completed'
+  | 'llm_hypothesis_started'
+  | 'llm_hypothesis_completed'
+  | 'query_generated'
   | 'recognition_started'
   | 'recognition_completed'
   | 'search_started'
+  | 'search_results'
   | 'search_completed'
   | 'summary_started'
   | 'summary_completed'
@@ -146,6 +150,9 @@ export interface StreamProgressEvent {
   payload?: {
     response?: RecognizeSearchResponse;
     code?: string;
+    hypothesis?: string;
+    query?: string;
+    searchResults?: NormalizedSearchResult[];
     [key: string]: unknown;
   };
 }
