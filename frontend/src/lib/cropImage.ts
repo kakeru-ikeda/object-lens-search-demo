@@ -52,7 +52,7 @@ export function cropImage(video: HTMLVideoElement, frameRect: CaptureRect, video
     frameRect
   );
   const canvas = document.createElement('canvas');
-  const targetWidth = Math.min(source.sw, 1024);
+  const targetWidth = Math.min(source.sw, 1920);
   const targetHeight = Math.max(1, Math.round(targetWidth * (source.sh / source.sw)));
 
   canvas.width = Math.round(targetWidth);
