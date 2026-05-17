@@ -21,9 +21,12 @@ func (s *stubAnnotator) BatchAnnotateImages(ctx context.Context, req *visionpb.B
 		LogoAnnotations:  []*visionpb.EntityAnnotation{{Description: "Coca-Cola", Score: 0.98}},
 		LabelAnnotations: []*visionpb.EntityAnnotation{{Description: "Beverage", Score: 0.77}},
 		WebDetection: &visionpb.WebDetection{
-			WebEntities:        []*visionpb.WebDetection_WebEntity{{Description: "Cola", Score: 0.88}},
-			BestGuessLabels:    []*visionpb.WebDetection_WebLabel{{Label: "coca cola can"}},
-			FullMatchingImages: []*visionpb.WebDetection_WebImage{{Url: "https://example.com/image.jpg"}},
+			WebEntities:             []*visionpb.WebDetection_WebEntity{{Description: "Cola", Score: 0.88}},
+			BestGuessLabels:         []*visionpb.WebDetection_WebLabel{{Label: "coca cola can"}},
+			FullMatchingImages:      []*visionpb.WebDetection_WebImage{{Url: "https://example.com/full.jpg", Score: 0.95}},
+			PartialMatchingImages:   []*visionpb.WebDetection_WebImage{{Url: "https://example.com/partial.jpg", Score: 0.81}},
+			VisuallySimilarImages:   []*visionpb.WebDetection_WebImage{{Url: "https://example.com/similar.jpg", Score: 0.64}},
+			PagesWithMatchingImages: []*visionpb.WebDetection_WebPage{{Url: "https://example.com/page", PageTitle: "Example page", Score: 0.7, FullMatchingImages: []*visionpb.WebDetection_WebImage{{Url: "https://example.com/full.jpg"}}}},
 		},
 	}}}, nil
 }
@@ -60,6 +63,18 @@ func TestExtractEvidenceRequestsVisionFeatures(t *testing.T) {
 	}
 	if len(resp.Evidence.BestGuessLabels) != 1 || resp.Evidence.BestGuessLabels[0] != "coca cola can" {
 		t.Fatalf("unexpected best guess labels: %#v", resp.Evidence.BestGuessLabels)
+	}
+	if len(resp.Evidence.MatchingImageURLs) != 2 || resp.Evidence.MatchingImageURLs[0] != "https://example.com/full.jpg" || resp.Evidence.MatchingImageURLs[1] != "https://example.com/partial.jpg" {
+		t.Fatalf("unexpected matching image URLs: %#v", resp.Evidence.MatchingImageURLs)
+	}
+	if len(resp.Evidence.RelatedImages) != 3 {
+		t.Fatalf("expected classified related images, got %#v", resp.Evidence.RelatedImages)
+	}
+	if resp.Evidence.RelatedImages[0].MatchType != "full_match" || resp.Evidence.RelatedImages[0].PageURL != "https://example.com/page" || resp.Evidence.RelatedImages[0].PageTitle != "Example page" {
+		t.Fatalf("unexpected full match metadata: %#v", resp.Evidence.RelatedImages[0])
+	}
+	if resp.Evidence.RelatedImages[1].MatchType != "partial_match" || resp.Evidence.RelatedImages[2].MatchType != "visually_similar" {
+		t.Fatalf("unexpected related image ordering/types: %#v", resp.Evidence.RelatedImages)
 	}
 }
 

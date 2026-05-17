@@ -300,13 +300,16 @@ type imageAwareVision struct{}
 
 func (imageAwareVision) ExtractEvidence(ctx context.Context, req model.ExtractEvidenceRequest) (*model.ExtractEvidenceResponse, error) {
 	label := "unknown"
+	imageURL := "https://example.com/unknown.jpg"
 	if strings.Contains(req.ImageDataURL, "aW1hZ2Ux") {
 		label = "front signal"
+		imageURL = "https://example.com/front.jpg"
 	}
 	if strings.Contains(req.ImageDataURL, "aW1hZ2Uy") {
 		label = "label signal"
+		imageURL = "https://example.com/label.jpg"
 	}
-	return &model.ExtractEvidenceResponse{Evidence: model.VisualEvidence{Labels: []model.EvidenceItem{{Text: label, Score: 0.9}}}, Provider: "stub"}, nil
+	return &model.ExtractEvidenceResponse{Evidence: model.VisualEvidence{Labels: []model.EvidenceItem{{Text: label, Score: 0.9}}, RelatedImages: []model.RelatedImage{{URL: imageURL, MatchType: "visually_similar", Score: 0.8}}}, Provider: "stub"}, nil
 }
 
 func (imageAwareVision) Close() error { return nil }
@@ -331,6 +334,12 @@ func TestExecuteMultiImageMergesEvidenceFromAllImages(t *testing.T) {
 	texts := []string{resp.RecognizedObject.VisualEvidence.Labels[0].Text, resp.RecognizedObject.VisualEvidence.Labels[1].Text}
 	if texts[0] != "front: front signal" || texts[1] != "label: label signal" {
 		t.Fatalf("unexpected merged evidence texts: %#v", texts)
+	}
+	if len(resp.RecognizedObject.VisualEvidence.RelatedImages) != 2 {
+		t.Fatalf("expected related images from both images: %#v", resp.RecognizedObject.VisualEvidence.RelatedImages)
+	}
+	if resp.RecognizedObject.VisualEvidence.RelatedImages[0].SourceImageID != "front" || resp.RecognizedObject.VisualEvidence.RelatedImages[1].SourceImageID != "label" {
+		t.Fatalf("expected related image source IDs, got %#v", resp.RecognizedObject.VisualEvidence.RelatedImages)
 	}
 	if len(resp.ImageAnalyses) != 2 {
 		t.Fatalf("expected per-image analyses, got %#v", resp.ImageAnalyses)

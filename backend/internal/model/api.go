@@ -35,6 +35,15 @@ type EvidenceItem struct {
 	Score float64 `json:"score,omitempty"`
 }
 
+type RelatedImage struct {
+	URL           string  `json:"url"`
+	MatchType     string  `json:"matchType"`
+	PageURL       string  `json:"pageUrl,omitempty"`
+	PageTitle     string  `json:"pageTitle,omitempty"`
+	Score         float64 `json:"score,omitempty"`
+	SourceImageID string  `json:"sourceImageId,omitempty"`
+}
+
 type VisualEvidence struct {
 	OCR               []EvidenceItem `json:"ocr,omitempty"`
 	Logos             []EvidenceItem `json:"logos,omitempty"`
@@ -42,6 +51,7 @@ type VisualEvidence struct {
 	BestGuessLabels   []string       `json:"bestGuessLabels,omitempty"`
 	Labels            []EvidenceItem `json:"labels,omitempty"`
 	MatchingImageURLs []string       `json:"matchingImageUrls,omitempty"`
+	RelatedImages     []RelatedImage `json:"relatedImages,omitempty"`
 }
 
 func (e VisualEvidence) EvidenceTypes() []string {
@@ -52,7 +62,7 @@ func (e VisualEvidence) EvidenceTypes() []string {
 	if len(e.Logos) > 0 {
 		types = append(types, "logo")
 	}
-	if len(e.WebEntities) > 0 || len(e.BestGuessLabels) > 0 || len(e.MatchingImageURLs) > 0 {
+	if len(e.WebEntities) > 0 || len(e.BestGuessLabels) > 0 || len(e.MatchingImageURLs) > 0 || len(e.RelatedImages) > 0 {
 		types = append(types, "web")
 	}
 	if len(e.Labels) > 0 {

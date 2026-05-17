@@ -971,6 +971,12 @@ func mergeEvidence(dst *model.VisualEvidence, src model.VisualEvidence, imageID 
 		dst.Labels = append(dst.Labels, item)
 	}
 	dst.MatchingImageURLs = append(dst.MatchingImageURLs, src.MatchingImageURLs...)
+	for _, image := range src.RelatedImages {
+		if image.SourceImageID == "" {
+			image.SourceImageID = imageID
+		}
+		dst.RelatedImages = append(dst.RelatedImages, image)
+	}
 }
 
 func queryQuality(req model.RecognizeSearchRequest, evidence *model.VisualEvidence, status string) model.QueryQuality {
