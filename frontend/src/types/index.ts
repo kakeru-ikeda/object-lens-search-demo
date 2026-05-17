@@ -14,6 +14,9 @@ export interface VisualEvidence {
 
 export interface RecognizedObject {
   objectName: string;
+  displayName?: string;
+  category?: string;
+  finalObjectName?: string;
   description: string;
   searchQuery: string;
   confidence: 'low' | 'medium' | 'high';

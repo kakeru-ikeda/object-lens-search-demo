@@ -37,12 +37,18 @@ function hasEvidence(evidence?: VisualEvidence) {
   );
 }
 
+function headlineFor(data: RecognizeSearchResponse) {
+  const object = data.recognizedObject;
+  return object.finalObjectName || object.displayName || object.objectName;
+}
+
 export function ResultPanel({ data, partialData, loading, error, onClose }: ResultPanelProps) {
   const isFinal = !!data;
   const showHypothesis = !isFinal && partialData?.hypothesis;
   const showQuery = !isFinal && partialData?.query;
   const showResults = !isFinal && partialData?.searchResults;
   const evidence = data?.recognizedObject.visualEvidence;
+  const category = data?.recognizedObject.category;
 
   return (
     <div className="flex flex-col w-full max-w-md mx-auto bg-neutral-50 rounded-t-2xl p-5 sm:p-6 overflow-y-auto max-h-[min(78dvh,calc(100dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-1rem))] shadow-xl">
@@ -50,10 +56,17 @@ export function ResultPanel({ data, partialData, loading, error, onClose }: Resu
         <div>
           {isFinal ? (
             <>
-              <h2 className="text-xl font-bold text-neutral-900">{data.recognizedObject.objectName}</h2>
-              <span className="text-xs font-medium px-2 py-1 bg-blue-100 text-blue-700 rounded-full mt-2 inline-block">
-                {data.recognizedObject.confidence} confidence
-              </span>
+              <h2 className="text-xl font-bold text-neutral-900">{headlineFor(data)}</h2>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <span className="text-xs font-medium px-2 py-1 bg-blue-100 text-blue-700 rounded-full inline-block">
+                  {data.recognizedObject.confidence} confidence
+                </span>
+                {category && (
+                  <span className="text-xs font-medium px-2 py-1 bg-neutral-200 text-neutral-700 rounded-full inline-block">
+                    {category}
+                  </span>
+                )}
+              </div>
             </>
           ) : (
             <div className="flex items-center gap-2">

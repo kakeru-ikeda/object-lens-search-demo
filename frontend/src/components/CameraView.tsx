@@ -163,6 +163,8 @@ function stageLabel(stage: string) {
     vision_completed: 'vision',
     recognition_started: 'recognition',
     recognition_completed: 'recognition',
+    recognition_refinement_started: 'refinement',
+    recognition_refinement_completed: 'refinement',
     search_started: 'search',
     search_completed: 'search',
     summary_started: 'summary',

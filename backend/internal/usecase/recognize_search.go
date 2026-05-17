@@ -130,7 +130,7 @@ func (u *RecognizeSearchUsecase) execute(ctx context.Context, req ExecuteRequest
 	}
 	go func() {
 		stageStart := time.Now()
-		recognized, err := u.LLM.RecognizeObject(workCtx, model.RecognizeObjectRequest{ImageDataURL: req.Request.ImageBase64, Crops: req.Request.Crops, Images: recognizeImages(req), MIMEType: req.MIMEType, CropMIMETypes: req.CropMIMETypes, Language: req.Request.Language})
+		recognized, err := u.LLM.RecognizeObject(workCtx, recognizeObjectRequest(req, nil))
 		recognitionCh <- recognitionResult{resp: recognized, err: err, elapsedMs: time.Since(stageStart).Milliseconds()}
 	}()
 
@@ -167,7 +167,7 @@ func (u *RecognizeSearchUsecase) execute(ctx context.Context, req ExecuteRequest
 			if err := emitter.emitFrom(ctx, "cloud_vision", "vision_completed", "completed", primaryImageID(req.Request), "Visual evidence extraction completed", payload); err != nil {
 				return nil, err
 			}
-			for _, source := range evidenceQuerySources(res.evidence) {
+			for _, source := range evidenceQuerySources(res.evidence, req.Request) {
 				if err := emitter.emitFrom(ctx, "cloud_vision", "query_generated", "completed", "", "Vision query generated", map[string]interface{}{"source": source.source, "query": source.query, "confidence": source.confidence}); err != nil {
 					return nil, err
 				}
@@ -192,10 +192,35 @@ func (u *RecognizeSearchUsecase) execute(ctx context.Context, req ExecuteRequest
 		cancel()
 		return nil, fmt.Errorf("%w: recognize object: empty response", ErrLLM)
 	}
+	recognized.Object = finalizeRecognizedObject(recognized.Object, nil)
 	if evidence != nil && !evidence.Empty() {
 		recognized.Object.VisualEvidence = evidence
-		recognized.Object.SearchQuery = enrichSearchQuery(recognized.Object.SearchQuery, evidence)
+		if shouldRefineRecognition(recognized.Object, evidence) {
+			if err := emitter.emit(ctx, "recognition_refinement_started", "started", "", "Evidence-backed recognition started", map[string]interface{}{"evidenceTypes": evidence.EvidenceTypes()}); err != nil {
+				return nil, err
+			}
+			stageStart := time.Now()
+			refined, err := u.LLM.RecognizeObject(ctx, recognizeObjectRequest(req, evidence))
+			elapsed := time.Since(stageStart).Milliseconds()
+			stageLatency.RecognizeMs += elapsed
+			if err != nil {
+				if u.Logger != nil {
+					u.Logger.Warn("evidence-backed recognition failed; keeping initial recognition", "error", err)
+				}
+				if err := emitter.emit(ctx, "recognition_refinement_completed", "warning", "", "Evidence-backed recognition unavailable", map[string]interface{}{"error": err.Error(), "elapsedMs": elapsed}); err != nil {
+					return nil, err
+				}
+			} else if refined != nil {
+				recognized.Object = mergeRecognizedObject(recognized.Object, refined.Object, evidence)
+				if err := emitter.emit(ctx, "recognition_refinement_completed", "completed", "", "Evidence-backed recognition completed", map[string]interface{}{"objectName": recognized.Object.ObjectName, "displayName": recognized.Object.DisplayName, "category": recognized.Object.Category, "finalObjectName": recognized.Object.FinalObjectName, "searchQuery": recognized.Object.SearchQuery, "elapsedMs": elapsed}); err != nil {
+					return nil, err
+				}
+			}
+		}
+		recognized.Object.VisualEvidence = evidence
+		recognized.Object.SearchQuery = enrichSearchQuery(recognized.Object.SearchQuery, evidence, req.Request)
 	}
+	recognized.Object = finalizeRecognizedObject(recognized.Object, nil)
 	if err := emitter.emitFrom(ctx, "bedrock", "query_generated", "completed", "", "Recognition query generated", map[string]interface{}{"source": "merged_evidence_query", "query": recognized.Object.SearchQuery, "confidence": recognized.Object.Confidence}); err != nil {
 		return nil, err
 	}
@@ -248,12 +273,14 @@ func (u *RecognizeSearchUsecase) execute(ctx context.Context, req ExecuteRequest
 	if err := emitter.emit(ctx, "summary_started", "started", "", "Summary generation started", nil); err != nil {
 		return nil, err
 	}
+	recognized.Object = finalizeRecognizedObject(recognized.Object, adoptedResults)
 	stageStart = time.Now()
 	summary, err := u.LLM.SummarizeSearchResults(ctx, model.SummarizeSearchResultsRequest{Language: req.Request.Language, RecognizedObject: recognized.Object, Results: adoptedResults})
 	stageLatency.SummarizeMs = time.Since(stageStart).Milliseconds()
 	if err != nil {
 		return nil, fmt.Errorf("%w: summarize search results: %v", ErrLLM, err)
 	}
+	recognized.Object = finalizeRecognizedObject(applySummaryIdentity(recognized.Object, summary), adoptedResults)
 	if err := emitter.emit(ctx, "summary_completed", "completed", "", "Summary completed", map[string]interface{}{"model": summary.Model}); err != nil {
 		return nil, err
 	}
@@ -278,6 +305,10 @@ func (u *RecognizeSearchUsecase) execute(ctx context.Context, req ExecuteRequest
 		return nil, err
 	}
 	return resp, nil
+}
+
+func recognizeObjectRequest(req ExecuteRequest, evidence *model.VisualEvidence) model.RecognizeObjectRequest {
+	return model.RecognizeObjectRequest{ImageDataURL: req.Request.ImageBase64, Crops: req.Request.Crops, Images: recognizeImages(req), MIMEType: req.MIMEType, CropMIMETypes: req.CropMIMETypes, Language: req.Request.Language, VisualEvidence: evidence}
 }
 
 func recognizeImages(req ExecuteRequest) []model.RecognizeImageInput {
@@ -533,22 +564,22 @@ type querySource struct {
 	confidence string
 }
 
-func evidenceQuerySources(evidence *model.VisualEvidence) []querySource {
+func evidenceQuerySources(evidence *model.VisualEvidence, req model.RecognizeSearchRequest) []querySource {
 	if evidence == nil || evidence.Empty() {
 		return nil
 	}
 	queries := make([]querySource, 0, 2)
-	for _, logo := range evidence.Logos {
-		queries = appendUniqueQuery(queries, "vision_labels_query", logo.Text, confidenceFromScore(logo.Score))
-	}
-	for _, label := range evidence.BestGuessLabels {
-		queries = appendUniqueQuery(queries, "vision_labels_query", label, "medium")
+	for _, ocr := range evidence.OCR {
+		queries = appendUniqueQuery(queries, "vision_ocr_query", evidenceSearchText(ocr.Text, req), confidenceFromScore(ocr.Score))
 	}
 	for _, entity := range evidence.WebEntities {
-		queries = appendUniqueQuery(queries, "vision_labels_query", entity.Text, confidenceFromScore(entity.Score))
+		queries = appendUniqueQuery(queries, "vision_web_query", evidenceSearchText(entity.Text, req), confidenceFromScore(entity.Score))
 	}
-	for _, ocr := range evidence.OCR {
-		queries = appendUniqueQuery(queries, "vision_ocr_query", ocr.Text, confidenceFromScore(ocr.Score))
+	for _, logo := range evidence.Logos {
+		queries = appendUniqueQuery(queries, "vision_logo_query", evidenceSearchText(logo.Text, req), confidenceFromScore(logo.Score))
+	}
+	for _, label := range evidence.BestGuessLabels {
+		queries = appendUniqueQuery(queries, "vision_labels_query", evidenceSearchText(label, req), "medium")
 	}
 	if len(queries) > 2 {
 		return queries[:2]
@@ -616,22 +647,22 @@ func searchResultKey(result model.NormalizedSearchResult) string {
 	return key
 }
 
-func enrichSearchQuery(query string, evidence *model.VisualEvidence) string {
+func enrichSearchQuery(query string, evidence *model.VisualEvidence, req model.RecognizeSearchRequest) string {
 	if evidence == nil || evidence.Empty() {
 		return query
 	}
 	terms := make([]string, 0, 6)
-	for _, logo := range evidence.Logos {
-		terms = appendEvidenceTerm(terms, logo.Text)
-	}
 	for _, text := range evidence.OCR {
-		terms = appendEvidenceTerm(terms, text.Text)
-	}
-	for _, label := range evidence.BestGuessLabels {
-		terms = appendEvidenceTerm(terms, label)
+		terms = appendEvidenceTerm(terms, query, text.Text, req)
 	}
 	for _, entity := range evidence.WebEntities {
-		terms = appendEvidenceTerm(terms, entity.Text)
+		terms = appendEvidenceTerm(terms, query, entity.Text, req)
+	}
+	for _, logo := range evidence.Logos {
+		terms = appendEvidenceTerm(terms, query, logo.Text, req)
+	}
+	for _, label := range evidence.BestGuessLabels {
+		terms = appendEvidenceTerm(terms, query, label, req)
 	}
 	if len(terms) == 0 {
 		return query
@@ -639,18 +670,219 @@ func enrichSearchQuery(query string, evidence *model.VisualEvidence) string {
 	return strings.TrimSpace(query + " " + strings.Join(terms, " "))
 }
 
-func appendEvidenceTerm(terms []string, value string) []string {
-	trimmed := strings.TrimSpace(value)
+func appendEvidenceTerm(terms []string, baseQuery string, value string, req model.RecognizeSearchRequest) []string {
+	trimmed := evidenceSearchText(value, req)
 	if trimmed == "" || len(terms) >= 6 {
 		return terms
 	}
 	lower := strings.ToLower(trimmed)
+	if strings.Contains(strings.ToLower(baseQuery), lower) {
+		return terms
+	}
 	for _, term := range terms {
 		if strings.ToLower(term) == lower {
 			return terms
 		}
 	}
 	return append(terms, trimmed)
+}
+
+func evidenceSearchText(value string, req model.RecognizeSearchRequest) string {
+	trimmed := stripEvidenceImagePrefix(value, req)
+	trimmed = strings.Join(strings.Fields(trimmed), " ")
+	return truncateRunes(trimmed, 240)
+}
+
+func stripEvidenceImagePrefix(value string, req model.RecognizeSearchRequest) string {
+	trimmed := strings.TrimSpace(value)
+	prefix, rest, ok := strings.Cut(trimmed, ": ")
+	if !ok || len(req.Images) == 0 {
+		return trimmed
+	}
+	for _, image := range req.Images {
+		if prefix == image.ID {
+			return strings.TrimSpace(rest)
+		}
+	}
+	return trimmed
+}
+
+func shouldRefineRecognition(object model.RecognizedObject, evidence *model.VisualEvidence) bool {
+	if evidence == nil || evidence.Empty() {
+		return false
+	}
+	if object.NeedsMoreContext || object.Confidence == "low" {
+		return true
+	}
+	return len(evidence.OCR) > 0 || len(evidence.WebEntities) > 0 || len(evidence.BestGuessLabels) > 0
+}
+
+func mergeRecognizedObject(base model.RecognizedObject, refined model.RecognizedObject, evidence *model.VisualEvidence) model.RecognizedObject {
+	merged := base
+	if value := strings.TrimSpace(refined.ObjectName); value != "" {
+		merged.ObjectName = value
+	}
+	if value := strings.TrimSpace(refined.DisplayName); value != "" {
+		merged.DisplayName = value
+	}
+	if value := strings.TrimSpace(refined.Category); value != "" {
+		merged.Category = value
+	}
+	if value := strings.TrimSpace(refined.FinalObjectName); value != "" {
+		merged.FinalObjectName = value
+	}
+	if value := strings.TrimSpace(refined.Description); value != "" {
+		merged.Description = value
+	}
+	if value := strings.TrimSpace(refined.SearchQuery); value != "" {
+		merged.SearchQuery = value
+	}
+	if value := strings.TrimSpace(refined.Confidence); value != "" {
+		merged.Confidence = value
+	}
+	merged.NeedsMoreContext = refined.NeedsMoreContext
+	merged.VisualEvidence = evidence
+	return finalizeRecognizedObject(merged, nil)
+}
+
+func applySummaryIdentity(object model.RecognizedObject, summary *model.SummarizeSearchResultsResponse) model.RecognizedObject {
+	if summary == nil {
+		return object
+	}
+	if value := strings.TrimSpace(summary.DisplayName); value != "" {
+		object.DisplayName = value
+	}
+	if value := strings.TrimSpace(summary.Category); value != "" {
+		object.Category = value
+	}
+	if value := strings.TrimSpace(summary.FinalObjectName); value != "" {
+		object.FinalObjectName = value
+	}
+	return object
+}
+
+func finalizeRecognizedObject(object model.RecognizedObject, results []model.NormalizedSearchResult) model.RecognizedObject {
+	object.ObjectName = strings.TrimSpace(object.ObjectName)
+	object.DisplayName = strings.TrimSpace(object.DisplayName)
+	object.Category = strings.TrimSpace(object.Category)
+	object.FinalObjectName = strings.TrimSpace(object.FinalObjectName)
+	object.Description = strings.TrimSpace(object.Description)
+	object.SearchQuery = strings.TrimSpace(object.SearchQuery)
+	object.Confidence = strings.TrimSpace(object.Confidence)
+	bestDisplayName := bestDisplayNameFromResults(results)
+	displayNameUpdated := false
+	if bestDisplayName != "" && (object.DisplayName == "" || identityLooksGeneric(object.DisplayName)) {
+		object.DisplayName = bestDisplayName
+		displayNameUpdated = true
+	}
+	if object.Category == "" {
+		object.Category = inferCategory(object, results)
+	}
+	if object.FinalObjectName == "" || identityLooksGeneric(object.FinalObjectName) || displayNameUpdated {
+		object.FinalObjectName = composeFinalObjectName(object.DisplayName, object.Category, object.ObjectName)
+	}
+	if object.ObjectName == "" {
+		object.ObjectName = object.FinalObjectName
+	}
+	if object.DisplayName == "" && object.FinalObjectName != object.Category {
+		object.DisplayName = object.FinalObjectName
+	}
+	return object
+}
+
+func bestDisplayNameFromResults(results []model.NormalizedSearchResult) string {
+	for _, result := range results {
+		candidate := strings.TrimSpace(result.Title)
+		if candidate == "" || identityLooksGeneric(candidate) {
+			continue
+		}
+		return truncateRunes(candidate, 120)
+	}
+	return ""
+}
+
+func inferCategory(object model.RecognizedObject, results []model.NormalizedSearchResult) string {
+	text := strings.ToLower(strings.Join(objectIdentityTexts(object, results), " "))
+	if strings.Contains(text, "blu-ray") || strings.Contains(text, "bluray") || strings.Contains(text, "ブルーレイ") || strings.Contains(text, "dvd") {
+		if containsJapanese(text) {
+			return "Blu-ray/DVDパッケージ"
+		}
+		return "Blu-ray/DVD package"
+	}
+	return ""
+}
+
+func objectIdentityTexts(object model.RecognizedObject, results []model.NormalizedSearchResult) []string {
+	texts := []string{object.ObjectName, object.DisplayName, object.Category, object.FinalObjectName, object.Description, object.SearchQuery}
+	if object.VisualEvidence != nil {
+		for _, item := range object.VisualEvidence.OCR {
+			texts = append(texts, item.Text)
+		}
+		for _, item := range object.VisualEvidence.WebEntities {
+			texts = append(texts, item.Text)
+		}
+		texts = append(texts, object.VisualEvidence.BestGuessLabels...)
+	}
+	for _, result := range results {
+		texts = append(texts, result.Title, result.Snippet)
+	}
+	return texts
+}
+
+func composeFinalObjectName(displayName string, category string, objectName string) string {
+	displayName = strings.TrimSpace(displayName)
+	category = strings.TrimSpace(category)
+	objectName = strings.TrimSpace(objectName)
+	if displayName != "" && category != "" {
+		if strings.Contains(strings.ToLower(displayName), strings.ToLower(category)) {
+			return displayName
+		}
+		separator := " "
+		if containsJapanese(displayName) || containsJapanese(category) {
+			separator = ""
+		}
+		return displayName + separator + category
+	}
+	if displayName != "" {
+		return displayName
+	}
+	if objectName != "" {
+		return objectName
+	}
+	return category
+}
+
+func identityLooksGeneric(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" || runeLen(trimmed) > 40 {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	return strings.Contains(lower, "album") || strings.Contains(lower, "cd") || strings.Contains(lower, "package") || strings.Contains(lower, "パッケージ") || strings.Contains(lower, "アルバム")
+}
+
+func containsJapanese(value string) bool {
+	for _, r := range value {
+		if (r >= '\u3040' && r <= '\u30ff') || (r >= '\u4e00' && r <= '\u9fff') || r == '『' || r == '』' {
+			return true
+		}
+	}
+	return false
+}
+
+func truncateRunes(value string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return string(runes[:limit])
+}
+
+func runeLen(value string) int {
+	return len([]rune(value))
 }
 
 func (u *RecognizeSearchUsecase) cloudVisionProvider() string {
