@@ -19,12 +19,17 @@ type RuntimeAPI interface {
 }
 
 type Client struct {
-	Runtime RuntimeAPI
-	ModelID string
+	Runtime      RuntimeAPI
+	ModelID      string
+	LightModelID string
 }
 
 func New(runtime RuntimeAPI, modelID string) *Client {
 	return &Client{Runtime: runtime, ModelID: modelID}
+}
+
+func NewWithLightModel(runtime RuntimeAPI, modelID string, lightModelID string) *Client {
+	return &Client{Runtime: runtime, ModelID: modelID, LightModelID: lightModelID}
 }
 
 func (c *Client) RecognizeObject(ctx context.Context, req model.RecognizeObjectRequest) (*model.RecognizeObjectResponse, error) {
@@ -79,12 +84,48 @@ func (c *Client) SummarizeSearchResults(ctx context.Context, req model.Summarize
 	return &model.SummarizeSearchResultsResponse{Text: parsed.Text, Model: c.ModelID}, nil
 }
 
+func (c *Client) HypothesizeObject(ctx context.Context, req model.HypothesizeObjectRequest) (*model.HypothesizeObjectResponse, error) {
+	modelID := strings.TrimSpace(c.LightModelID)
+	if modelID == "" {
+		modelID = strings.TrimSpace(c.ModelID)
+	}
+	if c.Runtime == nil || modelID == "" {
+		return nil, errors.New("bedrock runtime and light model ID are required")
+	}
+	mediaType, data, err := parseDataURL(req.ImageDataURL)
+	if err != nil {
+		return nil, err
+	}
+	prompt := hypothesisPrompt(req.Language, req.VisualEvidence)
+	body := anthropicRequest{
+		AnthropicVersion: "bedrock-2023-05-31",
+		MaxTokens:        350,
+		Temperature:      aws.Float64(0.1),
+		Messages: []anthropicMessage{{Role: "user", Content: []anthropicContent{
+			{Type: "image", Source: &anthropicImageSource{Type: "base64", MediaType: mediaType, Data: data}},
+			{Type: "text", Text: prompt},
+		}}},
+	}
+	var parsed model.RecognizedObject
+	if err := c.invokeJSONWithModel(ctx, modelID, body, &parsed); err != nil {
+		return nil, err
+	}
+	if parsed.Confidence == "" {
+		parsed.Confidence = "low"
+	}
+	return &model.HypothesizeObjectResponse{Object: parsed, Model: modelID}, nil
+}
+
 func (c *Client) invokeJSON(ctx context.Context, request anthropicRequest, target any) error {
+	return c.invokeJSONWithModel(ctx, c.ModelID, request, target)
+}
+
+func (c *Client) invokeJSONWithModel(ctx context.Context, modelID string, request anthropicRequest, target any) error {
 	body, err := json.Marshal(request)
 	if err != nil {
 		return fmt.Errorf("marshal bedrock request: %w", err)
 	}
-	out, err := c.Runtime.InvokeModel(ctx, &bedrockruntime.InvokeModelInput{ModelId: aws.String(c.ModelID), ContentType: aws.String("application/json"), Accept: aws.String("application/json"), Body: body})
+	out, err := c.Runtime.InvokeModel(ctx, &bedrockruntime.InvokeModelInput{ModelId: aws.String(modelID), ContentType: aws.String("application/json"), Accept: aws.String("application/json"), Body: body})
 	if err != nil {
 		return fmt.Errorf("invoke bedrock model: %w", err)
 	}
@@ -201,4 +242,16 @@ func summarizePrompt(language string, object model.RecognizedObject, results str
 		}
 	}
 	return fmt.Sprintf("Summarize these search results for object %q. Return only valid JSON {\"text\":\"...\"}. Use language %s.%s Results JSON: %s", object.ObjectName, language, evidence, results)
+}
+
+func hypothesisPrompt(language string, evidence *model.VisualEvidence) string {
+	base := "Quickly identify likely main object in image. Return only valid JSON with objectName, description, searchQuery, confidence (low|medium|high), needsMoreContext. Prefer concise searchQuery suitable for web search. Use language " + language + ". Do not include markdown."
+	if evidence == nil || evidence.Empty() {
+		return base
+	}
+	compact, err := json.Marshal(evidence)
+	if err != nil {
+		return base
+	}
+	return base + " Consider these Cloud Vision signals as weak evidence. Evidence JSON: " + string(compact)
 }
