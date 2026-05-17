@@ -39,6 +39,20 @@ func (c *Client) RecognizeObject(ctx context.Context, req model.RecognizeObjectR
 	return &model.RecognizeObjectResponse{Object: model.RecognizedObject{ObjectName: objectName, Description: description, SearchQuery: query, Confidence: "medium", NeedsMoreContext: false}, Model: c.modelName()}, nil
 }
 
+func (c *Client) HypothesizeObject(ctx context.Context, req model.HypothesizeObjectRequest) (*model.HypothesizeObjectResponse, error) {
+	resp, err := c.RecognizeObject(ctx, model.RecognizeObjectRequest{ImageDataURL: req.ImageDataURL, Crops: req.Crops, Images: req.Images, MIMEType: req.MIMEType, CropMIMETypes: req.CropMIMETypes, Language: req.Language, VisualEvidence: req.VisualEvidence})
+	if err != nil {
+		return nil, err
+	}
+	object := resp.Object
+	if req.Language == "ja" {
+		object.Description = "軽量モデルによる暫定仮説です。"
+	} else {
+		object.Description = "Interim hypothesis from lightweight model."
+	}
+	return &model.HypothesizeObjectResponse{Object: object, Model: c.modelName() + "-light"}, nil
+}
+
 func (c *Client) SummarizeSearchResults(ctx context.Context, req model.SummarizeSearchResultsRequest) (*model.SummarizeSearchResultsResponse, error) {
 	select {
 	case <-ctx.Done():

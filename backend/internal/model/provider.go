@@ -37,6 +37,21 @@ type RecognizeObjectResponse struct {
 	Model  string
 }
 
+type HypothesizeObjectRequest struct {
+	ImageDataURL   string
+	Crops          *ImageCrops
+	Images         []RecognizeImageInput
+	MIMEType       string
+	CropMIMETypes  map[string]string
+	Language       string
+	VisualEvidence *VisualEvidence
+}
+
+type HypothesizeObjectResponse struct {
+	Object RecognizedObject
+	Model  string
+}
+
 type SummarizeSearchResultsRequest struct {
 	Language         string
 	RecognizedObject RecognizedObject
