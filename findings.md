@@ -188,3 +188,13 @@ Re-verification:
 - CORS is controlled by `ALLOWED_ORIGINS`; GitHub Pages origin must be explicitly configured for frontend browser requests.
 - Frontend Vite build can receive public build-time values via `VITE_API_BASE_URL`, `VITE_AUTH_PASSPHRASE_HASH`, `VITE_AUTH_PASSPHRASE_SALT`, and `VITE_AUTH_PASSPHRASE_ITERATIONS`.
 - GitHub Pages project sites need a Vite base path such as `/object-lens-search-demo/` unless deployed at a custom domain or user site root.
+
+
+## 2026-05-17 Progressive Parallel SSE findings
+
+- Current SSE endpoint is already the correct transport: `POST /api/recognize-search-stream` consumed with `fetch` + `ReadableStream`, not native GET-only `EventSource`.
+- Current bottleneck is not transport but event granularity and frontend state: `ResultPanel` opens only after final `data`, and most stage events have thin payloads.
+- Oracle review approved the direction with safeguards: fix event schema, cap speculative searches, label Haiku output as unverified hypothesis, tolerate partial service failures, and build final response from an adopted revision snapshot.
+- Lightweight interim model is fixed to Bedrock `global.anthropic.claude-haiku-4-5-20251001-v1:0` through `BEDROCK_LIGHT_MODEL_ID`.
+- Implementation review found that the final recognized query must not also run as a speculative Tavily query. The fix reuses matching speculative results when available and only performs a primary search when no matching speculative result exists.
+- Runtime modal error `failed to search web results` was caused by primary Tavily failure propagating as fatal `ErrSearch` after SSE had already opened the progressive modal. In the progressive UX, search provider failure should be a degraded evidence state, not a terminal stream failure, when recognition has succeeded.

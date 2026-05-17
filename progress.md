@@ -275,3 +275,19 @@ Re-verification:
 - Changed `frontend/bin/deploy` so clean-tree enforcement is opt-in via `REQUIRE_CLEAN_TREE=true`; default allows deploy from a dirty source tree.
 - Re-ran `frontend/bin/deploy` successfully. It built with base `/object-lens-search-demo/` and pushed a new `gh-pages` branch.
 - Verified GitHub Pages URL `https://kakeru-ikeda.github.io/object-lens-search-demo/` returns HTTP 200 after propagation.
+
+
+## 2026-05-17 Progressive Parallel SSE Search
+
+- User approved the design and specified Bedrock lightweight model `global.anthropic.claude-haiku-4-5-20251001-v1:0`.
+- Loaded caveman and planning skills, read existing plan/findings/progress, and launched backend/frontend implementation tasks.
+- Backend implementation target: Haiku interim hypotheses, rich SSE payloads, bounded speculative Tavily searches, final snapshot aggregation.
+- Frontend implementation target: immediate modal open, partial stream state, service cards, and explicit unverified hypothesis labeling.
+- Implemented backend `HypothesisLLM`, Bedrock `BEDROCK_LIGHT_MODEL_ID`, rich `StreamEvent` source/revision, partial payloads, bounded speculative searches, result aggregation, and duplicate final-query reuse.
+- Implemented frontend immediate modal open, `partialData`, progressive hypothesis/query/search result rendering, and final replacement behavior.
+- Oracle review found duplicate final query Tavily calls as one blocker; fixed by reusing matching speculative results and suppressing duplicate primary `search_started` event.
+- Final verification passed: backend test/build/vet/race, frontend LSP/typecheck/build, and local mock SSE progressive event check.
+- User reported modal failure message `failed to search web results` after console key warnings were fixed.
+- Traced root cause to primary Tavily search failure returning fatal `ErrSearch` through SSE `error` event.
+- Changed primary search failure into a degraded final path: emit `search_completed` warning with `searchStatus: degraded`, keep recognized object/query, summarize with zero available results, and still emit `final`.
+- Added backend test for degraded final on search failure and re-ran backend test/build/vet/race plus frontend typecheck/build successfully.
